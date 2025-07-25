@@ -1,0 +1,59 @@
+{
+  "name": "metagen-workspace",
+  "version": "0.1.0",
+  "description": "Metagen superintelligent personal agent - TypeScript CLI + Python backend",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "bin": {
+    "metagen": "bundle/metagen.js"
+  },
+  "scripts": {
+    "build": "node scripts/build.js",
+    "bundle": "node scripts/bundle.js",
+    "clean": "rm -rf bundle dist packages/*/dist packages/*/.tsbuildinfo",
+    "test": "vitest",
+    "test:watch": "vitest watch",
+    "lint": "eslint . --ext .ts,.tsx",
+    "typecheck": "tsc --build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "start:backend": "uv run python main.py",
+    "start:cli": "./bundle/metagen.js",
+    "start:dev": "concurrently \"pnpm run start:backend\" \"pnpm run start:cli\"",
+    "dev": "pnpm run build && pnpm run bundle && pnpm run start:dev"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "concurrently": "^8.2.0",
+    "esbuild": "^0.19.0",
+    "eslint": "^8.0.0",
+    "prettier": "^3.6.2",
+    "react-devtools-core": "^4.28.5",
+    "typescript": "^5.3.0",
+    "vitest": "^1.6.1",
+    "yoga-wasm-web": "^0.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/metagen.git"
+  },
+  "keywords": [
+    "ai",
+    "assistant",
+    "cli",
+    "typescript",
+    "agent",
+    "google-services"
+  ],
+  "author": "Metagen Team",
+  "license": "MIT"
+}
