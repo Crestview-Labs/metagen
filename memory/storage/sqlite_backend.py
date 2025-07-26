@@ -7,7 +7,7 @@ from datetime import datetime
 from functools import wraps
 from typing import Any, Callable, Coroutine, Optional, TypeVar
 
-from sqlalchemy import and_, delete, func, or_, text
+from sqlalchemy import and_, delete, desc, func, or_, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.future import select
@@ -862,6 +862,28 @@ class SQLiteBackend(StorageBackend):
                 stmt = stmt.where(ToolUsageModel.entity_id == entity_id)
 
             stmt = stmt.order_by(ToolUsageModel.created_at)
+
+            result = await session.execute(stmt)
+            db_models = result.scalars().all()
+
+            return [self._db_to_tool_usage(db_model) for db_model in db_models]
+
+    async def get_recent_tool_usage(
+        self, tool_name: Optional[str] = None, entity_id: Optional[str] = None, limit: int = 10
+    ) -> list[ToolUsage]:
+        """Get recent tool usage records."""
+        if not self.engine:
+            raise RuntimeError("Backend not initialized")
+
+        async with self.async_session() as session:
+            stmt = select(ToolUsageModel).order_by(desc(ToolUsageModel.created_at))
+
+            if tool_name:
+                stmt = stmt.filter(ToolUsageModel.tool_name == tool_name)
+            if entity_id:
+                stmt = stmt.filter(ToolUsageModel.entity_id == entity_id)
+
+            stmt = stmt.limit(limit)
 
             result = await session.execute(stmt)
             db_models = result.scalars().all()

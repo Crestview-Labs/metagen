@@ -535,7 +535,8 @@ class TestAgenticClientWithRealLLMs:
         if fixture_name:
             request.getfixturevalue(fixture_name)
 
-        test_file = f"test_{model_id.name.lower()}.txt"
+        # Use a unique file in tests/tmpdir (within project directory due to tool restrictions)
+        test_file = f"tests/tmpdir/test_metagen_{model_id.name.lower()}_{os.getpid()}.txt"
         client = AgenticClient(llm=model_id)
         await client.initialize()
 
@@ -544,7 +545,7 @@ class TestAgenticClientWithRealLLMs:
                 Message(
                     role=Role.USER,
                     content=(
-                        f"Create a file called {test_file} with content 'Testing {model_id.name}'"
+                        f"Create a file at {test_file} with content 'Testing {model_id.name}'"
                     ),
                 )
             ]
@@ -561,19 +562,24 @@ class TestAgenticClientWithRealLLMs:
 
                 # Type narrowing - we know it's GenerationResponse when not streaming
                 assert isinstance(response, GenerationResponse)
+                assert response.content, f"{model_id.name} returned empty content"
 
-                # Gemini sometimes has issues with file operations, skip the strict assertions
-                if model_id == ModelID.GEMINI_2_5_PRO and not response.content:
-                    pytest.skip("Gemini returned empty content for file operations")
+                # Check that the model acknowledged creating the file
+                assert any(
+                    word in response.content.lower() for word in ["created", "wrote", "saved"]
+                ), f"{model_id.name} response doesn't indicate file creation: {response.content}"
 
-                assert response.content
-                assert "created" in response.content.lower() or "wrote" in response.content.lower()
-                assert os.path.exists(test_file)
+                # CRITICAL: Verify the file actually exists
+                assert os.path.exists(test_file), (
+                    f"{model_id.name} claimed to create file but {test_file} doesn't exist"
+                )
 
                 # Verify content
                 with open(test_file, "r") as f:
                     content = f.read()
-                    assert f"Testing {model_id.name}" in content
+                    assert f"Testing {model_id.name}" in content, (
+                        f"File content doesn't match expected. Got: {content}"
+                    )
         finally:
             await client.close()
             # Cleanup
@@ -705,8 +711,9 @@ class TestAgenticClientWithRealLLMs:
                 assert response.content
                 # Should mention the error
                 assert any(
-                    word in response.content.lower() for word in ["not", "error", "exist", "found"]
-                )
+                    word in response.content.lower()
+                    for word in ["not", "error", "exist", "found", "unable", "couldn't", "failed"]
+                ), f"{model_id.name} didn't mention error. Response: {response.content}"
         finally:
             await client.close()
 
@@ -755,7 +762,9 @@ class TestAgenticClientWithRealLLMs:
                     # Type narrowing - we know it's GenerationResponse when not streaming
                     assert isinstance(response, GenerationResponse)
                     assert response.content
-                    assert "1081" in response.content  # Correct answer
+                    # Accept various number formats: "1081", "1 081", "1,081"
+                    cleaned_content = response.content.replace(" ", "").replace(",", "")
+                    assert "1081" in cleaned_content  # Correct answer
             finally:
                 await client.close()
 
@@ -766,22 +775,21 @@ class TestAgenticClientWithRealLLMs:
         if fixture_name:
             request.getfixturevalue(fixture_name)
 
-        test_dir = f"test_dir_{model_id.name.lower()}"
+        test_dir = f"tests/tmpdir/test_dir_{model_id.name.lower()}_{os.getpid()}"
         test_file = f"{test_dir}/data.txt"
 
         client = AgenticClient(llm=model_id)
         await client.initialize()
 
         try:
-            # Complex workflow: create dir, create file, read it, list dir
+            # Complex workflow: create file (with directory), read it, search in dir
             messages = [
                 Message(
                     role=Role.USER,
                     content=f"""Please do the following:
-                1. Create a directory called {test_dir}
-                2. Create a file {test_file} with content 'Test data for {model_id.name}'
-                3. Read the file back to confirm
-                4. List the contents of the directory
+                1. Create a file at {test_file} with content 'Test data for {model_id.name}'
+                2. Read the file back to confirm the content
+                3. Search for all txt files in the {test_dir} directory
                 """,
                 )
             ]
@@ -803,12 +811,17 @@ class TestAgenticClientWithRealLLMs:
                 assert client.last_tools_duration_ms > 0
 
                 # Verify the workflow completed
-                assert os.path.exists(test_dir)
-                assert os.path.exists(test_file)
+                assert os.path.exists(test_file), f"File {test_file} was not created"
+                assert os.path.exists(test_dir), f"Directory {test_dir} was not created"
+
+                # Verify file content
+                with open(test_file, "r") as f:
+                    content = f.read()
+                    assert f"Test data for {model_id.name}" in content
         finally:
             await client.close()
             # Cleanup
-            if os.path.exists(test_file):
-                os.remove(test_file)
+            import shutil
+
             if os.path.exists(test_dir):
-                os.rmdir(test_dir)
+                shutil.rmtree(test_dir)

@@ -642,6 +642,12 @@ class MemoryManager:
         """Get all tool usage for a conversation turn."""
         return await self.storage.get_tool_usage_by_turn(turn_id)
 
+    async def get_recent_tool_usage(
+        self, tool_name: Optional[str] = None, entity_id: Optional[str] = None, limit: int = 10
+    ) -> list["ToolUsage"]:
+        """Get recent tool usage records, optionally filtered by tool name and entity."""
+        return await self.storage.get_recent_tool_usage(tool_name, entity_id, limit)
+
     async def get_agent_memory_stats(self, agent_id: str) -> dict[str, Any]:
         """Get memory statistics for an agent.
 

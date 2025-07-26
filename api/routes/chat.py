@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from agents.agent_manager import AgentManager, UIResponse
+from agents.tool_approval import ToolApprovalDecision, ToolApprovalResponse
 
 from ..models.chat import ChatRequest, ChatResponse, UIResponseModel
 
@@ -107,3 +108,94 @@ async def chat_stream(request: Request, chat_request: ChatRequest) -> StreamingR
             "Content-Type": "text/event-stream",
         },
     )
+
+
+@chat_router.post("/tool-decision")
+async def tool_decision(request: Request, decision_data: dict[str, Any]) -> dict[str, Any]:
+    """Handle tool approval/rejection decision from UI/CLI.
+
+    Expected payload:
+    {
+        "tool_id": "uuid",
+        "decision": "approved" | "rejected",
+        "feedback": "optional feedback if rejected",
+        "approved_by": "user_id or 'user'"
+    }
+    """
+    try:
+        logger.info(f"🔨 Tool decision received: {decision_data}")
+
+        # Validate required fields
+        if "tool_id" not in decision_data or "decision" not in decision_data:
+            raise HTTPException(
+                status_code=400, detail="Missing required fields: tool_id and decision"
+            )
+
+        # Create ToolApprovalResponse
+        try:
+            approval_response = ToolApprovalResponse(
+                tool_id=decision_data["tool_id"],
+                decision=ToolApprovalDecision(decision_data["decision"]),
+                feedback=decision_data.get("feedback"),
+                approved_by=decision_data.get("approved_by", "user"),
+            )
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Invalid decision value: {decision_data['decision']}. "
+                    "Must be 'approved' or 'rejected'"
+                ),
+            )
+
+        # Get manager and send approval response
+        manager = get_manager(request)
+        await manager.handle_tool_approval_response(approval_response)
+
+        logger.info(f"✅ Tool decision processed for {approval_response.tool_id}")
+
+        return {
+            "success": True,
+            "tool_id": approval_response.tool_id,
+            "decision": approval_response.decision.value,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Tool decision error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Tool decision processing failed: {str(e)}")
+
+
+@chat_router.get("/pending-tools")
+async def get_pending_tools(request: Request) -> dict[str, Any]:
+    """Get list of tools pending approval."""
+    try:
+        manager = get_manager(request)
+
+        # Get pending approvals from memory manager
+        if not hasattr(manager, "memory_manager") or not manager.memory_manager:
+            return {"success": True, "pending_tools": []}
+
+        pending = await manager.memory_manager.get_pending_approvals()
+
+        # Convert to API response format
+        pending_list = [
+            {
+                "tool_id": tool.id,
+                "tool_name": tool.tool_name,
+                "tool_args": tool.tool_args,
+                "entity_id": tool.entity_id,
+                "created_at": tool.created_at.isoformat() if tool.created_at else None,
+                "requires_approval": tool.requires_approval,
+            }
+            for tool in pending
+        ]
+
+        logger.info(f"📋 Found {len(pending_list)} pending tools")
+
+        return {"success": True, "pending_tools": pending_list, "count": len(pending_list)}
+
+    except Exception as e:
+        logger.error(f"❌ Get pending tools error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get pending tools: {str(e)}")

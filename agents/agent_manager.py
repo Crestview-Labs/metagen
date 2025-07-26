@@ -11,6 +11,7 @@ from typing import Any, AsyncIterator, Optional
 
 from agents.meta_agent import MetaAgent
 from agents.task_execution_agent import TaskExecutionAgent
+from agents.tool_approval import ToolApprovalResponse
 from agents.tool_result_formatter import tool_result_formatter
 from client.agentic_client import AgenticClient
 from client.mcp_server import MCPServer
@@ -31,6 +32,9 @@ class ResponseType(Enum):
     TOOL_RESULT = "tool_result"
     THINKING = "thinking"
     SYSTEM = "system"
+    TOOL_APPROVAL_REQUEST = "tool_approval_request"
+    TOOL_APPROVED = "tool_approved"
+    TOOL_REJECTED = "tool_rejected"
 
 
 @dataclass
@@ -127,10 +131,17 @@ class AgentManager:
         self.run_task_agent: Optional[asyncio.Task] = None
 
         self.router_task: Optional[asyncio.Task] = None
+        self.approval_timeout_task: Optional[asyncio.Task] = None
 
         # FIFO coordination for task completion
         self.pending_task_completions: list[asyncio.Event] = []
         self.pending_task_results: list[str] = []
+
+        # Tool approval configuration
+        self._require_tool_approval: bool = False
+        self._auto_approve_tools: set[str] = set()
+        self._approval_timeout: float = 30.0
+        self.approval_response_queue: asyncio.Queue = asyncio.Queue()
 
         # Initialization state
         self._initialized = False
@@ -141,6 +152,46 @@ class AgentManager:
             return self.meta_agent
         else:
             return self.task_agent
+
+    def configure_tool_approval(
+        self,
+        require_approval: bool = False,
+        auto_approve_tools: Optional[set[str]] = None,
+        approval_timeout: float = 30.0,
+    ) -> None:
+        """Configure tool approval settings for all agents.
+
+        Args:
+            require_approval: Whether to require approval for tool execution
+            auto_approve_tools: Set of tool names that don't need approval
+            approval_timeout: Timeout in seconds for approval
+        """
+        self._require_tool_approval = require_approval
+        self._auto_approve_tools = auto_approve_tools or set()
+        self._approval_timeout = approval_timeout
+
+        logger.info(
+            f"Tool approval configured: require={require_approval}, "
+            f"auto_approve={list(self._auto_approve_tools)}, "
+            f"timeout={approval_timeout}s"
+        )
+
+        # Configure existing agents if already initialized
+        if self.meta_agent:
+            self.meta_agent.configure_tool_approval(
+                require_approval=require_approval,
+                auto_approve_tools=auto_approve_tools,
+                approval_timeout=approval_timeout,
+                approval_response_queue=self.approval_response_queue,
+            )
+
+        if self.task_agent:
+            self.task_agent.configure_tool_approval(
+                require_approval=require_approval,
+                auto_approve_tools=auto_approve_tools,
+                approval_timeout=approval_timeout,
+                approval_response_queue=self.approval_response_queue,
+            )
 
     async def _create_agentic_client(self) -> AgenticClient:
         """Create a new agentic client instance for an agent."""
@@ -262,6 +313,38 @@ class AgentManager:
                     )
                     await asyncio.sleep(wait_time)
 
+    async def _check_approval_timeouts(self) -> None:
+        """Periodically check for timed-out approval requests."""
+        logger.info("Starting approval timeout checker")
+
+        while True:
+            try:
+                # Wait 5 seconds between checks
+                await asyncio.sleep(5.0)
+
+                # Check all agents for expired approvals
+                agents_to_check = []
+                if self.meta_agent:
+                    agents_to_check.append(("METAGEN", self.meta_agent))
+                if self.task_agent:
+                    agents_to_check.append((self.task_agent.agent_id, self.task_agent))
+
+                for agent_id, agent in agents_to_check:
+                    # Get timeout events from the agent
+                    timeout_events = await agent.check_expired_approvals()
+
+                    # Send timeout events to the output queue
+                    for event in timeout_events:
+                        await self.unified_agent_output.put(AgentMessage(agent_id, event))
+
+            except asyncio.CancelledError:
+                logger.info("Approval timeout checker cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in approval timeout checker: {e}", exc_info=True)
+                # Continue checking even if there's an error
+                await asyncio.sleep(1.0)
+
     async def _route_agent_outputs(self) -> None:
         """ONLY consumer of unified output queue with FIFO coordination."""
         logger.info("Starting message router")
@@ -350,6 +433,9 @@ class AgentManager:
             "processing": ResponseType.THINKING,
             "response": ResponseType.TEXT,
             "error": ResponseType.ERROR,
+            "tool_approval_request": ResponseType.TOOL_APPROVAL_REQUEST,
+            "tool_approved": ResponseType.TOOL_APPROVED,
+            "tool_rejected": ResponseType.TOOL_REJECTED,
         }
         return stage_mapping.get(stage, ResponseType.SYSTEM)
 
@@ -387,6 +473,15 @@ class AgentManager:
             )
             await self.meta_agent.initialize()
 
+            # Configure tool approval if enabled
+            if self._require_tool_approval:
+                self.meta_agent.configure_tool_approval(
+                    require_approval=self._require_tool_approval,
+                    auto_approve_tools=self._auto_approve_tools,
+                    approval_timeout=self._approval_timeout,
+                    approval_response_queue=self.approval_response_queue,
+                )
+
             # Create single TaskExecutionAgent with execute_task disabled
             task_client = await self._create_agentic_client()
             # Disable execute_task for TaskExecutionAgent to prevent recursion
@@ -398,6 +493,15 @@ class AgentManager:
             )
             await self.task_agent.initialize()
 
+            # Configure tool approval if enabled
+            if self._require_tool_approval:
+                self.task_agent.configure_tool_approval(
+                    require_approval=self._require_tool_approval,
+                    auto_approve_tools=self._auto_approve_tools,
+                    approval_timeout=self._approval_timeout,
+                    approval_response_queue=self.approval_response_queue,
+                )
+
             # Register tool interceptor
             tool_executor = get_tool_executor()
             tool_executor.register_interceptor("execute_task", self._intercept_execute_task)
@@ -406,6 +510,10 @@ class AgentManager:
             self.run_meta_agent = asyncio.create_task(self._run_meta_agent())
             self.run_task_agent = asyncio.create_task(self._run_task_agent())
             self.router_task = asyncio.create_task(self._route_agent_outputs())
+
+            # Start approval timeout checker if approval is enabled
+            if self._require_tool_approval:
+                self.approval_timeout_task = asyncio.create_task(self._check_approval_timeouts())
 
             self._initialized = True
 
@@ -483,6 +591,62 @@ class AgentManager:
                 content=f"Error: {str(e)}",
                 agent_id="SYSTEM",
                 metadata={"error_type": type(e).__name__},
+            )
+
+    async def handle_tool_approval_response(self, approval_response: ToolApprovalResponse) -> None:
+        """Handle tool approval response from UI/CLI.
+
+        Routes the approval to the correct agent and processes it asynchronously.
+
+        Args:
+            approval_response: The approval response from the user
+        """
+        logger.info(
+            f"Handling tool approval response: tool_id={approval_response.tool_id}, "
+            f"decision={approval_response.decision}"
+        )
+
+        # Determine which agent should handle this approval
+        # For now, we'll check both agents for pending approvals
+        agents_to_check = []
+        if self.meta_agent:
+            agents_to_check.append(("METAGEN", self.meta_agent))
+        if self.task_agent:
+            agents_to_check.append((self.task_agent.agent_id, self.task_agent))
+
+        # Find the agent with this pending approval
+        handled = False
+        for agent_id, agent in agents_to_check:
+            if approval_response.tool_id in agent._pending_approvals:
+                logger.info(f"Routing approval to agent {agent_id}")
+
+                # Process the approval and emit events
+                async for event in agent.process_approval_response(approval_response):
+                    # Send events to the unified output queue
+                    await self.unified_agent_output.put(AgentMessage(agent_id, event))
+
+                handled = True
+                break
+
+        if not handled:
+            logger.warning(
+                f"No agent found with pending approval for tool_id: {approval_response.tool_id}. "
+                f"The approval may have already timed out."
+            )
+
+            # Still send a notification event
+            await self.unified_agent_output.put(
+                AgentMessage(
+                    "SYSTEM",
+                    {
+                        "stage": "tool_approval_orphaned",
+                        "content": f"No pending approval found for tool {approval_response.tool_id}",
+                        "metadata": {
+                            "tool_id": approval_response.tool_id,
+                            "decision": approval_response.decision.value,
+                        },
+                    },
+                )
             )
 
     def _parse_agent_response(self, response: str) -> list[UIResponse]:
@@ -836,6 +1000,8 @@ class AgentManager:
                 self.run_task_agent.cancel()
             if self.router_task and not self.router_task.done():
                 self.router_task.cancel()
+            if self.approval_timeout_task and not self.approval_timeout_task.done():
+                self.approval_timeout_task.cancel()
 
             # Cleanup agents
             if self.meta_agent:

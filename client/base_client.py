@@ -117,6 +117,11 @@ class StreamEventType(str, Enum):
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
     ERROR = "error"
+    # New events for tool approval flow
+    TOOL_APPROVAL_REQUEST = "tool_approval_request"
+    TOOL_APPROVED = "tool_approved"
+    TOOL_REJECTED = "tool_rejected"
+    AGENT_STATE = "agent_state"
 
 
 @dataclass
@@ -141,6 +146,55 @@ class StreamEvent:
             type=StreamEventType.TOOL_CALL,
             content=f"{tool_name}({args_str})",
             metadata={"tool_name": tool_name, "tool_args": tool_args},
+        )
+
+    @classmethod
+    def tool_approval_request(
+        cls, tool_name: str, tool_args: dict[str, Any], tool_id: str
+    ) -> "StreamEvent":
+        """Create a tool approval request event."""
+        args_str = ", ".join(f"{k}={v}" for k, v in tool_args.items())
+        return cls(
+            type=StreamEventType.TOOL_APPROVAL_REQUEST,
+            content=f"{tool_name}({args_str})",
+            metadata={
+                "tool_name": tool_name,
+                "tool_args": tool_args,
+                "tool_id": tool_id,
+                "requires_approval": True,
+            },
+        )
+
+    @classmethod
+    def tool_approved(cls, tool_id: str, tool_name: str) -> "StreamEvent":
+        """Create a tool approved event."""
+        return cls(
+            type=StreamEventType.TOOL_APPROVED,
+            content=f"Tool approved: {tool_name}",
+            metadata={"tool_id": tool_id, "tool_name": tool_name},
+        )
+
+    @classmethod
+    def tool_rejected(
+        cls, tool_id: str, tool_name: str, feedback: Optional[str] = None
+    ) -> "StreamEvent":
+        """Create a tool rejected event."""
+        content = f"Tool rejected: {tool_name}"
+        if feedback:
+            content += f" - {feedback}"
+        return cls(
+            type=StreamEventType.TOOL_REJECTED,
+            content=content,
+            metadata={"tool_id": tool_id, "tool_name": tool_name, "feedback": feedback},
+        )
+
+    @classmethod
+    def agent_state(cls, state: str, agent_id: str) -> "StreamEvent":
+        """Create an agent state change event."""
+        return cls(
+            type=StreamEventType.AGENT_STATE,
+            content=f"Agent state: {state}",
+            metadata={"state": state, "agent_id": agent_id},
         )
 
     @classmethod

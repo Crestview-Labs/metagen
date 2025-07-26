@@ -11,7 +11,8 @@ import {
   SystemInfo,
   HealthCheck,
   ServerInfo,
-  ErrorResponse
+  ErrorResponse,
+  ToolApprovalResponse
 } from '../types/index.js';
 
 export class MetagenApiClient {
@@ -163,6 +164,17 @@ export class MetagenApiClient {
 
   async getSystemHealth(): Promise<HealthCheck> {
     const response: AxiosResponse<HealthCheck> = await this.api.get('/api/system/health');
+    return response.data;
+  }
+
+  // Tool approval endpoints
+  async sendToolDecision(decision: ToolApprovalResponse): Promise<{ success: boolean; tool_id: string; decision: string }> {
+    const response: AxiosResponse<{ success: boolean; tool_id: string; decision: string }> = await this.api.post('/api/chat/tool-decision', decision);
+    return response.data;
+  }
+
+  async getPendingTools(): Promise<{ success: boolean; pending_tools: Array<any>; count: number }> {
+    const response: AxiosResponse<{ success: boolean; pending_tools: Array<any>; count: number }> = await this.api.get('/api/chat/pending-tools');
     return response.data;
   }
 

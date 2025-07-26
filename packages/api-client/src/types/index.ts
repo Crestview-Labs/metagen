@@ -18,11 +18,27 @@ export interface ChatResponse {
 }
 
 export interface StreamResponse {
-  type: 'text' | 'error' | 'tool_call' | 'tool_result' | 'thinking' | 'system' | 'complete';
+  type: 'text' | 'error' | 'tool_call' | 'tool_result' | 'thinking' | 'system' | 'complete' | 'tool_approval_request' | 'tool_approved' | 'tool_rejected';
   content: string;
   metadata?: Record<string, any>;
   timestamp?: string;
   session_id?: string;
+}
+
+export interface ToolApprovalRequest {
+  tool_id: string;
+  tool_name: string;
+  tool_args: Record<string, any>;
+  agent_id: string;
+  description?: string;
+  risk_level?: string;
+}
+
+export interface ToolApprovalResponse {
+  tool_id: string;
+  decision: 'approved' | 'rejected' | 'timeout';
+  feedback?: string;
+  approved_by?: string;
 }
 
 export interface AuthStatus {

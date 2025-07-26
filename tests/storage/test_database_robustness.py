@@ -18,7 +18,8 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import text
 
-from memory.storage.database import ConversationTurnModel, ToolUsageModel
+from db.manager import DatabaseManager
+from db.memory_models import ConversationTurnModel, ToolUsageModel
 from memory.storage.models import ConversationTurn, ToolUsage, ToolUsageStatus, TurnStatus
 from memory.storage.sqlite_backend import SQLiteBackend
 
@@ -58,14 +59,20 @@ def create_test_turn(**kwargs: Any) -> ConversationTurn:
 
 
 @pytest_asyncio.fixture
-async def robust_backend(tmp_path: Path) -> AsyncGenerator[SQLiteBackend, None]:
-    """Create a backend with robustness features enabled."""
+async def test_db_manager(tmp_path: Path):
+    """Create a test database manager."""
     db_path = tmp_path / "test_robust.db"
-    db_url = f"sqlite+aiosqlite:///{db_path}"
+    manager = DatabaseManager(db_path)
+    await manager.initialize()
+    yield manager
+    await manager.close()
 
-    backend = SQLiteBackend(db_url)
+
+@pytest_asyncio.fixture
+async def robust_backend(test_db_manager) -> AsyncGenerator[SQLiteBackend, None]:
+    """Create a backend with robustness features enabled."""
+    backend = SQLiteBackend(test_db_manager)
     await backend.initialize()
-
     yield backend
     await backend.close()
 
@@ -348,10 +355,11 @@ class TestCrashRecovery:
     async def test_database_consistency_after_interrupt(self, tmp_path: Path) -> None:
         """Test that database remains consistent after simulated crash."""
         db_path = tmp_path / "crash_test.db"
-        db_url = f"sqlite+aiosqlite:///{db_path}"
 
         # First backend - write some data
-        backend1 = SQLiteBackend(db_url)
+        db_manager1 = DatabaseManager(db_path)
+        await db_manager1.initialize()
+        backend1 = SQLiteBackend(db_manager1)
         await backend1.initialize()
 
         # Write 5 turns
@@ -376,7 +384,9 @@ class TestCrashRecovery:
             await backend1.engine.dispose()
 
         # Open new backend and check consistency
-        backend2 = SQLiteBackend(db_url)
+        db_manager2 = DatabaseManager(db_path)
+        await db_manager2.initialize()
+        backend2 = SQLiteBackend(db_manager2)
         await backend2.initialize()
 
         # Should have exactly 5 turns (WAL mode should preserve them)
@@ -389,6 +399,8 @@ class TestCrashRecovery:
             assert turn.user_query == f"Query {i}"
 
         await backend2.close()
+        await db_manager1.close()
+        await db_manager2.close()
 
     @pytest.mark.asyncio
     async def test_wal_checkpoint_recovery(self, robust_backend: SQLiteBackend) -> None:

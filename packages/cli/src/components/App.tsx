@@ -10,6 +10,7 @@ import { apiClient } from '@metagen/api-client';
 import { useTextBuffer } from './TextBuffer.js';
 import { useMetagenStream } from '../hooks/useMetagenStream.js';
 import { InputPrompt } from './InputPrompt.js';
+import { ToolApprovalPrompt } from './ToolApprovalPrompt.js';
 
 // Simple config interface for our CLI
 interface Config {
@@ -40,7 +41,7 @@ export const App: React.FC = () => {
   const [terminalHeight, setTerminalHeight] = useState(process.stdout.rows || 24);
   
   // Use the streaming hook for chat functionality
-  const { messages, isResponding, sessionId, showToolResults, toggleToolResults, sendMessage, addMessage, handleSlashCommand } = useMetagenStream();
+  const { messages, isResponding, sessionId, showToolResults, toggleToolResults, sendMessage, addMessage, handleSlashCommand, pendingApproval, handleToolDecision } = useMetagenStream();
   
   // Authentication state
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
@@ -129,6 +130,18 @@ export const App: React.FC = () => {
       exit();
       return;
     }
+    
+    // Handle tool approval keyboard shortcuts
+    if (pendingApproval && !isResponding) {
+      if (input === 'y' || input === 'Y') {
+        handleToolDecision(true);
+      } else if (input === 'n' || input === 'N') {
+        handleToolDecision(false);
+      } else if (input === 'd' || input === 'D') {
+        // TODO: Show more details about the tool
+        addMessage('system', 'Tool details: ' + JSON.stringify(pendingApproval.tool_args, null, 2), 'system');
+      }
+    }
   });
 
 
@@ -175,10 +188,25 @@ export const App: React.FC = () => {
               <Text color="cyan">💡 {message.content}</Text>
             ) : message.type === 'error' ? (
               <Text color="red">❌ {message.content}</Text>
+            ) : message.type === 'tool_approval_request' ? (
+              <Text color="yellow" bold>  ├─ {message.content}</Text>
+            ) : message.type === 'tool_approved' ? (
+              <Text color="green">  ├─ {message.content}</Text>
+            ) : message.type === 'tool_rejected' ? (
+              <Text color="red">  ├─ {message.content}</Text>
             ) : null}
           </Box>
         ))}
       </Box>
+
+      {/* Tool approval prompt when needed */}
+      {pendingApproval && (
+        <ToolApprovalPrompt 
+          approval={pendingApproval} 
+          onDecision={handleToolDecision}
+          isResponding={isResponding}
+        />
+      )}
 
       {/* Input area at bottom */}
       <Box flexDirection="column" marginTop={1}>
@@ -186,10 +214,10 @@ export const App: React.FC = () => {
           buffer={buffer}
           onSubmit={handleSubmit}
           inputWidth={inputWidth}
-          focus={!isResponding}
+          focus={!isResponding && !pendingApproval}
         />
         <Text color="gray" dimColor>
-          {buffer.text.startsWith('/') ? 'Command mode' : 'Chat mode'} • 
+          {pendingApproval ? 'Awaiting tool approval' : buffer.text.startsWith('/') ? 'Command mode' : 'Chat mode'} • 
           Use "/" for commands • Tool results: {showToolResults ? 'ON' : 'OFF'} • Ctrl+C to exit
         </Text>
       </Box>

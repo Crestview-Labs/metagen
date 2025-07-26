@@ -1,6 +1,7 @@
 """Test MCP server infrastructure and tool execution."""
 
 import asyncio
+from pathlib import Path
 from typing import Any, AsyncGenerator
 
 import pytest
@@ -10,6 +11,7 @@ from client.agentic_client import AgenticClient
 from client.base_client import GenerationResponse, Message, Role
 from client.mcp_server import MCPServer
 from client.models import ModelID
+from db.manager import DatabaseManager
 from memory.storage.manager import MemoryManager
 from memory.storage.sqlite_backend import SQLiteBackend
 from tools.registry import get_tool_registry
@@ -21,10 +23,20 @@ class TestMCPInfrastructure:
     """Test MCP server and tool infrastructure."""
 
     @pytest_asyncio.fixture
-    async def memory_manager(self, tmp_path: Any) -> AsyncGenerator[MemoryManager, None]:
+    async def test_db_manager(self, tmp_path: Path) -> AsyncGenerator[DatabaseManager, None]:
+        """Create a test database manager."""
+        db_path = tmp_path / "test_mcp.db"
+        manager = DatabaseManager(db_path)
+        await manager.initialize()
+        yield manager
+        await manager.close()
+
+    @pytest_asyncio.fixture
+    async def memory_manager(
+        self, test_db_manager: DatabaseManager
+    ) -> AsyncGenerator[MemoryManager, None]:
         """Create memory manager with test data."""
-        test_db = tmp_path / "test_mcp.db"
-        backend = SQLiteBackend(f"sqlite+aiosqlite:///{test_db}")
+        backend = SQLiteBackend(test_db_manager)
         manager = MemoryManager(backend)
         await manager.initialize()
 

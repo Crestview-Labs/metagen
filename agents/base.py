@@ -1,5 +1,6 @@
 """Base Agent - Abstract base class for all agents with context-aware memory."""
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -8,6 +9,12 @@ from typing import Any, AsyncIterator, Optional
 
 from opentelemetry import trace
 
+from agents.tool_approval import (
+    ToolApprovalDecision,
+    ToolApprovalRequest,
+    ToolApprovalResponse,
+    ToolPendingApproval,
+)
 from memory.storage.models import TurnStatus
 
 logger = logging.getLogger(__name__)
@@ -84,6 +91,13 @@ class BaseAgent(ABC):
         # Initialize tracer for telemetry
         self.tracer = trace.get_tracer(__name__)
 
+        # Tool approval configuration
+        self._require_tool_approval: bool = False
+        self._auto_approve_tools: set[str] = set()
+        self._approval_timeout: float = 30.0
+        self._approval_response_queue: Optional[asyncio.Queue] = None
+        self._pending_approvals: dict[str, ToolPendingApproval] = {}
+
     @property
     def is_initialized(self) -> bool:
         """Check if agent is initialized."""
@@ -105,6 +119,36 @@ class BaseAgent(ABC):
             await self.memory_manager.initialize()
 
         self._initialized = True
+
+    def configure_tool_approval(
+        self,
+        require_approval: bool = False,
+        auto_approve_tools: Optional[set[str]] = None,
+        approval_timeout: float = 30.0,
+        approval_response_queue: Optional[asyncio.Queue] = None,
+    ) -> None:
+        """Configure tool approval settings for the agent.
+
+        Args:
+            require_approval: Whether to require approval for tool execution
+            auto_approve_tools: Set of tool names that don't need approval
+            approval_timeout: Timeout in seconds for approval (default 30s)
+            approval_response_queue: Queue to receive approval responses
+        """
+        self._require_tool_approval = require_approval
+        self._auto_approve_tools = auto_approve_tools or set()
+        self._approval_timeout = approval_timeout
+        self._approval_response_queue = approval_response_queue
+
+        if require_approval and not approval_response_queue:
+            raise ValueError(
+                "approval_response_queue must be provided when require_approval is True"
+            )
+
+        logger.info(
+            f"Tool approval configured for {self.agent_id}: "
+            f"require={require_approval}, auto_approve={list(self._auto_approve_tools)}"
+        )
 
     async def stream_chat(self, message: str, **kwargs: Any) -> AsyncIterator[dict[str, Any]]:
         """
@@ -200,6 +244,346 @@ class BaseAgent(ABC):
         # This would need to be implemented in agentic client
         # For now, return unknown
         return "unknown"
+
+    async def _handle_tool_call_event(
+        self,
+        event: Any,
+        turn_id: Optional[str],
+        trace_id: Optional[str],
+        tool_usage_map: dict[str, str],
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Handle tool call events including approval flow.
+
+        Non-blocking implementation:
+        - If approval needed: yields request and stores pending state
+        - If approved/auto-approved: proceeds with execution
+
+        Args:
+            event: The tool call event from the stream
+            turn_id: Current conversation turn ID
+            trace_id: Tracing ID for observability
+            tool_usage_map: Map of tool names to usage IDs
+
+        Yields:
+            Events for tool approval, tool call, etc.
+        """
+        # Extract tool information
+        tool_name = event.metadata.get("tool_name", "unknown") if event.metadata else "unknown"
+        tool_args = event.metadata.get("tool_args", {}) if event.metadata else {}
+
+        # Check if tool requires approval
+        # TODO: Move disabled_tools to Agent level and pass to AgenticClient
+        needs_approval = self._require_tool_approval and tool_name not in self._auto_approve_tools
+
+        # Record tool usage in database
+        tool_usage_id = None
+        if self.memory_manager and turn_id:
+            try:
+                tool_usage_id = await self.memory_manager.record_tool_usage(
+                    turn_id=turn_id,
+                    entity_id=self.agent_id,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    requires_approval=needs_approval,
+                    trace_id=trace_id,
+                )
+            except Exception as e:
+                logger.error(f"Failed to record tool usage: {e}")
+
+        # Handle approval if needed
+        if needs_approval:
+            # Create approval request
+            approval_request = ToolApprovalRequest(
+                tool_id=tool_usage_id or "unknown",
+                tool_name=tool_name,
+                tool_args=tool_args,
+                agent_id=self.agent_id,
+                description=f"Execute {tool_name} with provided arguments",
+                risk_level="medium",  # TODO: Determine from tool metadata
+            )
+
+            # Create and store pending approval
+            pending = ToolPendingApproval(
+                tool_id=tool_usage_id or "unknown",
+                tool_name=tool_name,
+                tool_args=tool_args,
+                turn_id=turn_id,
+                trace_id=trace_id,
+                tool_usage_id=tool_usage_id,
+                original_event=event,
+            )
+            self._pending_approvals[pending.tool_id] = pending
+
+            # Yield approval request event (non-blocking!)
+            yield {
+                "stage": "tool_approval_request",
+                "content": f"{tool_name}({', '.join(f'{k}={v}' for k, v in tool_args.items())})",
+                "metadata": {
+                    "tool_name": tool_name,
+                    "tool_args": tool_args,
+                    "tool_id": tool_usage_id,
+                    "approval_request": approval_request.to_dict(),
+                },
+            }
+
+            logger.info(
+                f"Tool {tool_name} requires approval - request sent (tool_id: {tool_usage_id})"
+            )
+            # Don't execute - wait for approval response
+            return
+
+        # Auto-approved or no approval required - proceed with execution
+        if self.memory_manager and tool_usage_id:
+            try:
+                await self.memory_manager.start_tool_execution(tool_usage_id)
+                tool_usage_map[tool_name] = tool_usage_id
+            except Exception as e:
+                logger.error(f"Failed to start tool execution: {e}")
+
+        # Emit tool call event
+        yield {
+            "stage": "tool_call",
+            "content": event.content or "",
+            "metadata": {**(event.metadata or {}), "tool_usage_id": tool_usage_id},
+        }
+
+    async def _handle_tool_result_event(
+        self,
+        event: Any,
+        tool_usage_map: dict[str, str],
+        tool_results_data: list[dict[str, Any]],
+        show_tool_results: bool,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Handle tool result events.
+
+        Args:
+            event: The tool result event
+            tool_usage_map: Map of tool names to usage IDs
+            tool_results_data: List to append result data to
+            show_tool_results: Whether to yield tool result events
+
+        Yields:
+            Tool result events if show_tool_results is True
+        """
+        # Extract result information
+        tool_name = event.metadata.get("tool_name", "unknown") if event.metadata else "unknown"
+        success = event.metadata.get("success", False) if event.metadata else False
+        result = event.metadata.get("result") if event.metadata else None
+        error = event.metadata.get("error") if event.metadata else None
+        duration_ms = event.metadata.get("duration_ms") if event.metadata else None
+
+        # Track result data
+        tool_results_data.append(
+            {
+                "tool": tool_name,
+                "success": success,
+                "result": result,
+                "error": error,
+                "duration_ms": duration_ms,
+            }
+        )
+
+        # Update tool usage record with result
+        if self.memory_manager and tool_name in tool_usage_map:
+            tool_usage_id = tool_usage_map[tool_name]
+            try:
+                await self.memory_manager.complete_tool_execution(
+                    tool_usage_id=tool_usage_id,
+                    success=success,
+                    result=result,
+                    error=error,
+                    duration_ms=duration_ms,
+                )
+            except Exception as e:
+                logger.error(f"Failed to update tool execution result: {e}")
+
+        # Emit tool result event only if enabled
+        if show_tool_results:
+            yield {
+                "stage": "tool_result",
+                "content": event.content or "",
+                "metadata": event.metadata,
+            }
+
+    async def _handle_content_event(self, event: Any) -> str:
+        """Handle content events.
+
+        Args:
+            event: The content event
+
+        Returns:
+            The response content
+        """
+        return event.content or ""
+
+    async def process_approval_response(
+        self, approval_response: ToolApprovalResponse
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Process a tool approval response asynchronously.
+
+        This method handles the second phase of tool approval:
+        - Validates the tool ID
+        - Updates the database
+        - Executes approved tools
+        - Cleans up pending state
+
+        Args:
+            approval_response: The approval response from the user
+
+        Yields:
+            Events for tool execution or rejection
+        """
+        tool_id = approval_response.tool_id
+
+        # Validate that we have a pending approval for this tool
+        pending = self._pending_approvals.get(tool_id)
+        if not pending:
+            # This could happen if:
+            # 1. The approval already timed out and was cleaned up
+            # 2. The tool_id is invalid
+            # 3. The approval was already processed
+            logger.warning(
+                f"No pending approval found for tool_id: {tool_id}. "
+                f"It may have already timed out or been processed."
+            )
+
+            # Still update the database if we can (for record keeping)
+            if self.memory_manager and tool_id and tool_id != "unknown":
+                try:
+                    await self.memory_manager.update_tool_approval(
+                        tool_id,
+                        approved=approval_response.decision == ToolApprovalDecision.APPROVED,
+                        user_feedback=approval_response.feedback or "Received after timeout",
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to update late approval in database: {e}")
+
+            # Yield an informational event
+            yield {
+                "stage": "tool_approval_late",
+                "content": f"Approval received too late for tool {tool_id}",
+                "metadata": {
+                    "tool_id": tool_id,
+                    "decision": approval_response.decision.value,
+                    "reason": "No pending approval found - likely timed out",
+                },
+            }
+            return
+
+        # Remove from pending approvals
+        del self._pending_approvals[tool_id]
+
+        # Update database with decision
+        if self.memory_manager and pending.tool_usage_id:
+            try:
+                await self.memory_manager.update_tool_approval(
+                    pending.tool_usage_id,
+                    approved=approval_response.decision == ToolApprovalDecision.APPROVED,
+                    user_feedback=approval_response.feedback,
+                )
+            except Exception as e:
+                logger.error(f"Failed to update tool approval in database: {e}")
+
+        # Handle based on decision
+        if approval_response.decision == ToolApprovalDecision.APPROVED:
+            # Emit approval event
+            yield {
+                "stage": "tool_approved",
+                "content": f"Tool approved: {pending.tool_name}",
+                "metadata": {"tool_name": pending.tool_name, "tool_id": tool_id},
+            }
+
+            # Execute the tool
+            if self.memory_manager and pending.tool_usage_id:
+                try:
+                    await self.memory_manager.start_tool_execution(pending.tool_usage_id)
+                except Exception as e:
+                    logger.error(f"Failed to start tool execution: {e}")
+
+            # Emit tool call event (reuse original event data)
+            yield {
+                "stage": "tool_call",
+                "content": pending.original_event.content if pending.original_event else "",
+                "metadata": {
+                    **(pending.original_event.metadata if pending.original_event else {}),
+                    "tool_usage_id": pending.tool_usage_id,
+                },
+            }
+
+            # Note: The actual tool execution will happen in the agentic client
+            # and results will flow through the normal stream
+
+        else:
+            # Tool was rejected or timed out
+            yield {
+                "stage": "tool_rejected",
+                "content": f"Tool rejected: {pending.tool_name}",
+                "metadata": {
+                    "tool_name": pending.tool_name,
+                    "tool_id": tool_id,
+                    "feedback": approval_response.feedback,
+                    "decision": approval_response.decision.value,
+                },
+            }
+
+            logger.info(
+                f"Tool {pending.tool_name} was {approval_response.decision.value} "
+                f"with feedback: {approval_response.feedback}"
+            )
+
+    async def check_expired_approvals(self) -> list[dict[str, Any]]:
+        """Check for and handle expired approval requests.
+
+        This should be called periodically to clean up timed-out requests.
+
+        Returns:
+            List of timeout events that should be yielded to the stream
+        """
+
+        expired_ids = []
+        timeout_events = []
+
+        for tool_id, pending in self._pending_approvals.items():
+            if pending.is_expired(self._approval_timeout):
+                expired_ids.append(tool_id)
+
+        # Process expired approvals
+        for tool_id in expired_ids:
+            pending = self._pending_approvals[tool_id]
+            logger.warning(f"Tool approval timed out for {pending.tool_name} (tool_id: {tool_id})")
+
+            # Remove from pending
+            del self._pending_approvals[tool_id]
+
+            # Update database (create a task to run async operation)
+            if self.memory_manager and pending.tool_usage_id:
+
+                async def update_timeout(usage_id: str) -> None:
+                    try:
+                        await self.memory_manager.update_tool_approval(
+                            usage_id, approved=False, user_feedback="Approval request timed out"
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to update timeout in database: {e}")
+
+                # Fire and forget the database update
+                asyncio.create_task(update_timeout(pending.tool_usage_id))
+
+            # Create timeout event
+            timeout_events.append(
+                {
+                    "stage": "tool_rejected",
+                    "content": f"Tool timed out: {pending.tool_name}",
+                    "metadata": {
+                        "tool_name": pending.tool_name,
+                        "tool_id": tool_id,
+                        "feedback": "Approval request timed out",
+                        "decision": ToolApprovalDecision.TIMEOUT.value,
+                    },
+                }
+            )
+
+        return timeout_events
 
     async def cleanup(self) -> None:
         """Clean up agent resources."""
@@ -343,88 +727,29 @@ class BaseAgent(ABC):
                         )
 
                         if event.is_tool_call():
-                            # Track tool calls
+                            # Track tool calls for later reporting
                             tool_name = (
                                 event.metadata.get("tool_name") if event.metadata else "unknown"
                             )
                             tool_args = (
                                 event.metadata.get("tool_args", {}) if event.metadata else {}
                             )
-
                             tool_calls_used.append({"name": tool_name, "args": tool_args})
 
-                            # Record tool usage in real-time if we have a turn
-                            tool_usage_id = None
-                            if self.memory_manager and turn_id:
-                                tool_usage_id = await self.memory_manager.record_tool_usage(
-                                    turn_id=turn_id,
-                                    entity_id=self.agent_id,
-                                    tool_name=tool_name,
-                                    tool_args=tool_args,
-                                    requires_approval=False,  # TODO: Get from tool metadata
-                                    trace_id=trace_id,
-                                )
-
-                                # Start execution immediately
-                                if tool_usage_id:
-                                    await self.memory_manager.start_tool_execution(tool_usage_id)
-                                    # Map tool name to usage ID for result tracking
-                                    tool_usage_map[tool_name] = tool_usage_id
-
-                            # Emit tool call event with tool_usage_id
-                            yield {
-                                "stage": "tool_call",
-                                "content": event.content or "",
-                                "metadata": {
-                                    **(event.metadata or {}),
-                                    "tool_usage_id": tool_usage_id,
-                                },
-                            }
+                            # Delegate to handler
+                            async for handler_event in self._handle_tool_call_event(
+                                event, turn_id, trace_id, tool_usage_map
+                            ):
+                                yield handler_event
                         elif event.is_tool_result():
-                            # Track tool results
-                            tool_name = (
-                                event.metadata.get("tool_name") if event.metadata else "unknown"
-                            )
-                            success = (
-                                event.metadata.get("success", False) if event.metadata else False
-                            )
-                            result = event.metadata.get("result") if event.metadata else None
-                            error = event.metadata.get("error") if event.metadata else None
-                            duration_ms = (
-                                event.metadata.get("duration_ms") if event.metadata else None
-                            )
-
-                            tool_results_data.append(
-                                {
-                                    "tool": tool_name,
-                                    "success": success,
-                                    "result": result,
-                                    "error": error,
-                                    "duration_ms": duration_ms,
-                                }
-                            )
-
-                            # Update tool usage record with result
-                            if self.memory_manager and tool_name in tool_usage_map:
-                                tool_usage_id = tool_usage_map[tool_name]
-                                await self.memory_manager.complete_tool_execution(
-                                    tool_usage_id=tool_usage_id,
-                                    success=success,
-                                    result=result,
-                                    error=error,
-                                    duration_ms=duration_ms,
-                                )
-
-                            # Emit tool result event only if enabled
-                            if show_tool_results:
-                                yield {
-                                    "stage": "tool_result",
-                                    "content": event.content or "",
-                                    "metadata": event.metadata,
-                                }
+                            # Delegate to handler
+                            async for handler_event in self._handle_tool_result_event(
+                                event, tool_usage_map, tool_results_data, show_tool_results
+                            ):
+                                yield handler_event
                         elif event.is_content():
-                            # This is the final response content
-                            response_content = event.content or ""
+                            # Delegate to handler
+                            response_content = await self._handle_content_event(event)
 
                     stream_span.set_attribute("total_events", event_count)
 

@@ -4,7 +4,7 @@ import { apiClient, ChatResponse, StreamResponse } from '@metagen/api-client';
 
 interface Message {
   id: string;
-  type: 'user' | 'agent' | 'error' | 'system' | 'thinking' | 'tool_call' | 'tool_result';
+  type: 'user' | 'agent' | 'error' | 'system' | 'thinking' | 'tool_call' | 'tool_result' | 'tool_approval_request' | 'tool_approved' | 'tool_rejected';
   content: string;
   timestamp: Date;
   isStreaming?: boolean;
@@ -47,7 +47,7 @@ export const ChatInterface: React.FC = () => {
     setTimeout(() => setIsReady(true), 100);
   }, []);
 
-  const addMessage = useCallback((sender: string, content: string, type: 'user' | 'agent' | 'error' | 'system' | 'thinking' | 'tool_call' | 'tool_result' = 'agent', metadata?: Record<string, any>) => {
+  const addMessage = useCallback((sender: string, content: string, type: 'user' | 'agent' | 'error' | 'system' | 'thinking' | 'tool_call' | 'tool_result' | 'tool_approval_request' | 'tool_approved' | 'tool_rejected' = 'agent', metadata?: Record<string, any>) => {
     const message: Message = {
       id: `${Date.now()}-${Math.random()}`,
       type,
@@ -221,6 +221,9 @@ export const ChatInterface: React.FC = () => {
       case 'thinking': return '🤔';
       case 'tool_call': return '🔧';
       case 'tool_result': return '📊';
+      case 'tool_approval_request': return '🔐';
+      case 'tool_approved': return '✅';
+      case 'tool_rejected': return '❌';
       default: return '📝';
     }
   };
@@ -234,6 +237,9 @@ export const ChatInterface: React.FC = () => {
       case 'thinking': return 'yellow';
       case 'tool_call': return 'magenta';
       case 'tool_result': return 'cyan';
+      case 'tool_approval_request': return 'yellow';
+      case 'tool_approved': return 'green';
+      case 'tool_rejected': return 'red';
       default: return 'white';
     }
   };

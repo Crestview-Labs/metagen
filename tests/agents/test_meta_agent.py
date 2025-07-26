@@ -20,10 +20,20 @@ class TestMetaAgent:
     """Test MetaAgent functionality."""
 
     @pytest_asyncio.fixture
-    async def memory_manager(self, tmp_path: Path) -> AsyncIterator[MemoryManager]:
+    async def test_db_manager(self, tmp_path: Path):
+        """Create a test database manager."""
+        from db.manager import DatabaseManager
+
+        db_path = tmp_path / "test_meta_agent.db"
+        manager = DatabaseManager(db_path)
+        await manager.initialize()
+        yield manager
+        await manager.close()
+
+    @pytest_asyncio.fixture
+    async def memory_manager(self, test_db_manager) -> AsyncIterator[MemoryManager]:
         """Create memory manager for testing."""
-        test_db = tmp_path / "test_meta_agent.db"
-        backend = SQLiteBackend(f"sqlite+aiosqlite:///{test_db}")
+        backend = SQLiteBackend(test_db_manager)
         manager = MemoryManager(backend)
         await manager.initialize()
         yield manager
@@ -155,17 +165,17 @@ class TestMetaAgent:
         # Mock LLM to raise an error
         mock_llm_client.generate.side_effect = Exception("API Error")
 
-        # Should handle error gracefully
-        error_occurred = False
-        try:
-            chunks = []
-            async for chunk in meta_agent.stream_chat("Test query"):
-                chunks.append(chunk)
-        except Exception as e:
-            error_occurred = True
-            assert "api" in str(e).lower() or "error" in str(e).lower()
+        # Should handle error gracefully by yielding error event
+        chunks = []
+        error_event_found = False
+        async for chunk in meta_agent.stream_chat("Test query"):
+            chunks.append(chunk)
+            if chunk.get("stage") == "error":
+                error_event_found = True
+                assert "API Error" in chunk.get("content", "")
+                assert chunk.get("metadata", {}).get("error") == "API Error"
 
-        assert error_occurred, "Expected an exception to be raised"
+        assert error_event_found, "Expected an error event to be yielded"
 
         # Error should be recorded in conversation
         recent = await meta_agent.memory_manager.get_recent_conversations(limit=1)

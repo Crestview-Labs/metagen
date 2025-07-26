@@ -20,6 +20,7 @@ except ImportError:
 from agents.meta_agent import MetaAgent
 from client.agentic_client import AgenticClient
 from client.models import ModelID
+from db.manager import DatabaseManager
 from memory.storage.manager import MemoryManager
 from memory.storage.sqlite_backend import SQLiteBackend
 
@@ -39,11 +40,13 @@ class TestMetaAgentIntegration:
         """Test basic MetaAgent functionality with memory."""
         # Create temporary database
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-            db_path = tmp.name
+            db_path = Path(tmp.name)
 
         try:
             # Initialize components
-            storage_backend = SQLiteBackend(f"sqlite+aiosqlite:///{db_path}")
+            db_manager = DatabaseManager(db_path)
+            await db_manager.initialize()
+            storage_backend = SQLiteBackend(db_manager)
             await storage_backend.initialize()
 
             memory_manager = MemoryManager(storage_backend)
@@ -84,17 +87,20 @@ class TestMetaAgentIntegration:
             # Cleanup
             await memory_manager.close()
             await storage_backend.close()
-            os.unlink(db_path)
+            await db_manager.close()
+            os.unlink(str(db_path))
 
     async def test_meta_agent_memory_persistence(self) -> None:
         """Test that MetaAgent conversations are persisted in memory."""
         # Create temporary database
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-            db_path = tmp.name
+            db_path = Path(tmp.name)
 
         try:
             # Initialize components
-            storage_backend = SQLiteBackend(f"sqlite+aiosqlite:///{db_path}")
+            db_manager = DatabaseManager(db_path)
+            await db_manager.initialize()
+            storage_backend = SQLiteBackend(db_manager)
             await storage_backend.initialize()
 
             memory_manager = MemoryManager(storage_backend)
@@ -141,7 +147,8 @@ class TestMetaAgentIntegration:
             # Cleanup
             await memory_manager.close()
             await storage_backend.close()
-            os.unlink(db_path)
+            await db_manager.close()
+            os.unlink(str(db_path))
 
 
 if __name__ == "__main__":

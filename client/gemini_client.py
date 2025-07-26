@@ -125,7 +125,7 @@ class GeminiClient(BaseClient):
     def _convert_tools_to_gemini_format(self, tools: list[dict[str, Any]]) -> list[Any]:
         """Convert tool definitions to Gemini's format.
 
-        Returns a list of function declarations for direct passing to tools parameter.
+        Returns a list of Tool objects containing function declarations.
         """
         if not tools:
             return []
@@ -140,8 +140,8 @@ class GeminiClient(BaseClient):
             )
             function_declarations.append(func_decl)
 
-        # Return function declarations directly - the SDK will wrap them
-        return function_declarations
+        # Wrap function declarations in a Tool object
+        return [types.Tool(function_declarations=function_declarations)]
 
     def _extract_tool_calls_from_response(self, response: Any) -> list[dict[str, Any]]:
         """Extract tool calls from Gemini response."""

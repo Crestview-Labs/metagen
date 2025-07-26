@@ -75,6 +75,16 @@ export const chatCommand = new Command('chat')
             case 'tool_result':
               console.log(chalk.cyan(`${streamResponse.content}`));
               break;
+            case 'tool_approval_request':
+              console.log(chalk.yellow.bold(`🔐 Tool requires approval: ${streamResponse.content}`));
+              console.log(chalk.yellow('Note: Run in interactive mode to approve/reject tools'));
+              break;
+            case 'tool_approved':
+              console.log(chalk.green(`✅ ${streamResponse.content}`));
+              break;
+            case 'tool_rejected':
+              console.log(chalk.red(`❌ ${streamResponse.content}`));
+              break;
             case 'error':
               console.log(chalk.red(`❌ ${streamResponse.content}`));
               break;

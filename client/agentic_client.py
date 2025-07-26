@@ -1,5 +1,6 @@
 """Agentic Client - LLM client with tool calling capabilities using unified tool system."""
 
+import asyncio
 import json
 import logging
 import time
@@ -75,6 +76,12 @@ class AgenticClient(BaseClient):
         self.tool_registry = get_tool_registry()
         self.tool_executor = get_tool_executor()
 
+        # Tool approval state
+        self._waiting_for_approval: bool = False
+        self._approval_queue: Optional[asyncio.Queue] = None  # Queue for approval responses
+        self._require_tool_approval: bool = False  # Global approval setting
+        self._auto_approve_tools: set[str] = set()  # Tools that don't need approval
+
     def add_server(self, server: MCPServer) -> None:
         """Add an MCPServer instance to this client."""
         if self._initialized:
@@ -130,6 +137,31 @@ class AgenticClient(BaseClient):
         logger.info(
             f"MCP client initialized with {len(all_tools)} tools "
             f"({core_tool_count} core, {mcp_tool_count} MCP)"
+        )
+
+    def configure_tool_approval(
+        self,
+        require_approval: bool = False,
+        auto_approve_tools: Optional[set[str]] = None,
+        approval_queue: Optional[asyncio.Queue] = None,
+    ) -> None:
+        """Configure tool approval settings.
+
+        Args:
+            require_approval: Whether to require approval for all tools
+            auto_approve_tools: Set of tool names that don't need approval
+            approval_queue: Queue to receive approval/rejection responses
+        """
+        self._require_tool_approval = require_approval
+        self._auto_approve_tools = auto_approve_tools or set()
+        self._approval_queue = approval_queue
+
+        if require_approval and not approval_queue:
+            raise ValueError("approval_queue must be provided when require_approval is True")
+
+        logger.info(
+            f"Tool approval configured: require={require_approval}, "
+            f"auto_approve={list(self._auto_approve_tools)}"
         )
 
     def _should_continue_tool_loop(
