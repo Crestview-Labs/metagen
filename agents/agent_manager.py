@@ -640,7 +640,9 @@ class AgentManager:
                     "SYSTEM",
                     {
                         "stage": "tool_approval_orphaned",
-                        "content": f"No pending approval found for tool {approval_response.tool_id}",
+                        "content": (
+                            f"No pending approval found for tool {approval_response.tool_id}"
+                        ),
                         "metadata": {
                             "tool_id": approval_response.tool_id,
                             "decision": approval_response.decision.value,
