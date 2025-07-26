@@ -9,6 +9,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, AsyncIterator, Optional
 
+from agents.base import BaseAgent
 from agents.meta_agent import MetaAgent
 from agents.task_execution_agent import TaskExecutionAgent
 from agents.tool_approval import ToolApprovalResponse
@@ -323,7 +324,7 @@ class AgentManager:
                 await asyncio.sleep(5.0)
 
                 # Check all agents for expired approvals
-                agents_to_check = []
+                agents_to_check: list[tuple[str, BaseAgent]] = []
                 if self.meta_agent:
                     agents_to_check.append(("METAGEN", self.meta_agent))
                 if self.task_agent:
@@ -608,7 +609,7 @@ class AgentManager:
 
         # Determine which agent should handle this approval
         # For now, we'll check both agents for pending approvals
-        agents_to_check = []
+        agents_to_check: list[tuple[str, BaseAgent]] = []
         if self.meta_agent:
             agents_to_check.append(("METAGEN", self.meta_agent))
         if self.task_agent:

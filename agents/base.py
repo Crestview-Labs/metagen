@@ -710,8 +710,9 @@ class BaseAgent(ABC):
 
                 # Track tool usage
                 tool_calls_used = []
-                tool_results_data = []
-                tool_usage_map = {}  # Map tool name to tool_usage_id for updating results
+                tool_results_data: list[dict[str, Any]] = []
+                # Map tool name to tool_usage_id for updating results
+                tool_usage_map: dict[str, str] = {}
                 response_content = ""
                 event_count = 0
 

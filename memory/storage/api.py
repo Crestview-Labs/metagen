@@ -141,3 +141,10 @@ class StorageBackend(ABC):
     async def get_tool_usage_by_turn(self, turn_id: str) -> list["ToolUsage"]:
         """Get tool usage records for a turn."""
         pass
+
+    @abstractmethod
+    async def get_recent_tool_usage(
+        self, tool_name: Optional[str] = None, entity_id: Optional[str] = None, limit: int = 10
+    ) -> list["ToolUsage"]:
+        """Get recent tool usage records, optionally filtered by tool name and entity."""
+        pass

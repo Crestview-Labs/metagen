@@ -1,7 +1,7 @@
 """Test MetaAgent core functionality."""
 
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 from unittest.mock import AsyncMock
 
 import pytest
@@ -20,7 +20,7 @@ class TestMetaAgent:
     """Test MetaAgent functionality."""
 
     @pytest_asyncio.fixture
-    async def test_db_manager(self, tmp_path: Path):
+    async def test_db_manager(self, tmp_path: Path) -> AsyncIterator[Any]:
         """Create a test database manager."""
         from db.manager import DatabaseManager
 
@@ -31,7 +31,7 @@ class TestMetaAgent:
         await manager.close()
 
     @pytest_asyncio.fixture
-    async def memory_manager(self, test_db_manager) -> AsyncIterator[MemoryManager]:
+    async def memory_manager(self, test_db_manager: Any) -> AsyncIterator[MemoryManager]:
         """Create memory manager for testing."""
         backend = SQLiteBackend(test_db_manager)
         manager = MemoryManager(backend)

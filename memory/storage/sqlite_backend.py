@@ -872,7 +872,7 @@ class SQLiteBackend(StorageBackend):
         self, tool_name: Optional[str] = None, entity_id: Optional[str] = None, limit: int = 10
     ) -> list[ToolUsage]:
         """Get recent tool usage records."""
-        if not self.engine:
+        if not self.engine or not self.async_session:
             raise RuntimeError("Backend not initialized")
 
         async with self.async_session() as session:

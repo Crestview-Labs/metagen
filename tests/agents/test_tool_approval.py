@@ -1,7 +1,7 @@
 """Tests for tool approval functionality in agents."""
 
 import asyncio
-from typing import Any
+from typing import Any, AsyncIterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -16,7 +16,7 @@ from memory import MemoryManager, SQLiteBackend
 class TestToolApprovalDataClasses:
     """Test the tool approval data classes."""
 
-    def test_tool_approval_request_creation(self):
+    def test_tool_approval_request_creation(self) -> None:
         """Test creating a ToolApprovalRequest."""
         request = ToolApprovalRequest(
             tool_id="test-123",
@@ -34,7 +34,7 @@ class TestToolApprovalDataClasses:
         assert request.description == "Write a test file"
         assert request.risk_level == "medium"
 
-    def test_tool_approval_request_to_dict(self):
+    def test_tool_approval_request_to_dict(self) -> None:
         """Test converting ToolApprovalRequest to dict."""
         request = ToolApprovalRequest(
             tool_id="test-123",
@@ -51,7 +51,7 @@ class TestToolApprovalDataClasses:
         assert data["description"] is None
         assert data["risk_level"] is None
 
-    def test_tool_approval_response_creation(self):
+    def test_tool_approval_response_creation(self) -> None:
         """Test creating a ToolApprovalResponse."""
         response = ToolApprovalResponse(
             tool_id="test-123",
@@ -65,7 +65,7 @@ class TestToolApprovalDataClasses:
         assert response.feedback is None
         assert response.approved_by == "user"
 
-    def test_tool_approval_response_with_rejection(self):
+    def test_tool_approval_response_with_rejection(self) -> None:
         """Test creating a rejection response with feedback."""
         response = ToolApprovalResponse(
             tool_id="test-123",
@@ -79,7 +79,7 @@ class TestToolApprovalDataClasses:
         assert response.feedback == "This operation seems unsafe"
         assert response.approved_by == "admin"
 
-    def test_tool_approval_response_timeout(self):
+    def test_tool_approval_response_timeout(self) -> None:
         """Test creating a timeout response."""
         response = ToolApprovalResponse.timeout("test-123")
 
@@ -88,7 +88,7 @@ class TestToolApprovalDataClasses:
         assert response.feedback == "Approval request timed out"
         assert response.approved_by == "system"
 
-    def test_tool_approval_decision_enum(self):
+    def test_tool_approval_decision_enum(self) -> None:
         """Test ToolApprovalDecision enum values."""
         assert ToolApprovalDecision.APPROVED == "approved"
         assert ToolApprovalDecision.REJECTED == "rejected"
@@ -99,7 +99,7 @@ class TestBaseAgentToolApprovalMocked:
     """Test tool approval functionality in BaseAgent with mocks."""
 
     @pytest.fixture
-    def mock_memory_manager(self):
+    def mock_memory_manager(self) -> AsyncMock:
         """Create a mock memory manager."""
         manager = AsyncMock()
         manager.record_tool_usage = AsyncMock(return_value="tool-usage-123")
@@ -109,14 +109,16 @@ class TestBaseAgentToolApprovalMocked:
         return manager
 
     @pytest.fixture
-    def mock_agentic_client(self):
+    def mock_agentic_client(self) -> AsyncMock:
         """Create a mock agentic client."""
         client = AsyncMock()
         client.generate = AsyncMock()
         return client
 
     @pytest_asyncio.fixture
-    async def base_agent(self, mock_memory_manager, mock_agentic_client):
+    async def base_agent(
+        self, mock_memory_manager: AsyncMock, mock_agentic_client: AsyncMock
+    ) -> BaseAgent:
         """Create a BaseAgent instance for testing."""
 
         class TestAgent(BaseAgent):
@@ -136,9 +138,9 @@ class TestBaseAgentToolApprovalMocked:
         return agent
 
     @pytest.mark.asyncio
-    async def test_configure_tool_approval(self, base_agent):
+    async def test_configure_tool_approval(self, base_agent: BaseAgent) -> None:
         """Test configuring tool approval settings."""
-        approval_queue = asyncio.Queue()
+        approval_queue: asyncio.Queue[ToolApprovalResponse] = asyncio.Queue()
 
         base_agent.configure_tool_approval(
             require_approval=True,
@@ -153,13 +155,17 @@ class TestBaseAgentToolApprovalMocked:
         assert base_agent._approval_response_queue == approval_queue
 
     @pytest.mark.asyncio
-    async def test_configure_tool_approval_without_queue_raises_error(self, base_agent):
+    async def test_configure_tool_approval_without_queue_raises_error(
+        self, base_agent: BaseAgent
+    ) -> None:
         """Test that configuring approval without queue raises ValueError."""
         with pytest.raises(ValueError, match="approval_response_queue must be provided"):
             base_agent.configure_tool_approval(require_approval=True)
 
     @pytest.mark.asyncio
-    async def test_process_approval_response_approved(self, base_agent, mock_memory_manager):
+    async def test_process_approval_response_approved(
+        self, base_agent: BaseAgent, mock_memory_manager: AsyncMock
+    ) -> None:
         """Test processing approval response when approved."""
         from agents.tool_approval import ToolPendingApproval
 
@@ -202,7 +208,9 @@ class TestBaseAgentToolApprovalMocked:
         assert "tool-123" not in base_agent._pending_approvals
 
     @pytest.mark.asyncio
-    async def test_process_approval_response_rejected(self, base_agent, mock_memory_manager):
+    async def test_process_approval_response_rejected(
+        self, base_agent: BaseAgent, mock_memory_manager: AsyncMock
+    ) -> None:
         """Test processing approval response when rejected."""
         from agents.tool_approval import ToolPendingApproval
 
@@ -248,7 +256,9 @@ class TestBaseAgentToolApprovalMocked:
         assert "tool-123" not in base_agent._pending_approvals
 
     @pytest.mark.asyncio
-    async def test_check_expired_approvals(self, base_agent, mock_memory_manager):
+    async def test_check_expired_approvals(
+        self, base_agent: BaseAgent, mock_memory_manager: AsyncMock
+    ) -> None:
         """Test checking for expired approvals."""
         from agents.tool_approval import ToolPendingApproval
 
@@ -285,7 +295,9 @@ class TestBaseAgentToolApprovalMocked:
         assert "tool-123" not in base_agent._pending_approvals
 
     @pytest.mark.asyncio
-    async def test_process_approval_response_late(self, base_agent, mock_memory_manager):
+    async def test_process_approval_response_late(
+        self, base_agent: BaseAgent, mock_memory_manager: AsyncMock
+    ) -> None:
         """Test processing approval response after timeout."""
         base_agent.configure_tool_approval(
             require_approval=True, approval_timeout=30.0, approval_response_queue=asyncio.Queue()
@@ -312,7 +324,9 @@ class TestBaseAgentToolApprovalMocked:
         )
 
     @pytest.mark.asyncio
-    async def test_handle_tool_call_event_with_approval(self, base_agent, mock_memory_manager):
+    async def test_handle_tool_call_event_with_approval(
+        self, base_agent: BaseAgent, mock_memory_manager: AsyncMock
+    ) -> None:
         """Test handling tool call event that requires approval."""
         base_agent.configure_tool_approval(
             require_approval=True,
@@ -363,7 +377,9 @@ class TestBaseAgentToolApprovalMocked:
         mock_memory_manager.start_tool_execution.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_handle_tool_call_event_auto_approved(self, base_agent, mock_memory_manager):
+    async def test_handle_tool_call_event_auto_approved(
+        self, base_agent: BaseAgent, mock_memory_manager: AsyncMock
+    ) -> None:
         """Test handling tool call event that is auto-approved."""
         base_agent.configure_tool_approval(
             require_approval=True,
@@ -406,7 +422,7 @@ class TestToolApprovalEndToEnd:
     """End-to-end tests for tool approval functionality."""
 
     @pytest_asyncio.fixture
-    async def test_db_manager(self, tmp_path):
+    async def test_db_manager(self, tmp_path: Any) -> AsyncIterator[Any]:
         """Create a test database manager."""
         from db.manager import DatabaseManager
 
@@ -417,7 +433,7 @@ class TestToolApprovalEndToEnd:
         await manager.close()
 
     @pytest_asyncio.fixture
-    async def memory_manager(self, test_db_manager):
+    async def memory_manager(self, test_db_manager: Any) -> MemoryManager:
         """Create a real memory manager."""
         backend = SQLiteBackend(test_db_manager)
         manager = MemoryManager(backend)
@@ -425,7 +441,7 @@ class TestToolApprovalEndToEnd:
         return manager
 
     @pytest_asyncio.fixture
-    async def agent_manager(self, test_db_manager):
+    async def agent_manager(self, test_db_manager: Any) -> AsyncIterator[AgentManager]:
         """Create a real AgentManager."""
         manager = AgentManager(
             agent_name="TestManager",
@@ -437,7 +453,7 @@ class TestToolApprovalEndToEnd:
         await manager.cleanup()
 
     @pytest.mark.asyncio
-    async def test_full_approval_flow_approved(self, agent_manager):
+    async def test_full_approval_flow_approved(self, agent_manager: AgentManager) -> None:
         """Test the full approval flow with approval."""
         # Configure tool approval
         agent_manager.configure_tool_approval(
@@ -462,7 +478,7 @@ class TestToolApprovalEndToEnd:
             if response.type == ResponseType.TOOL_APPROVAL_REQUEST and not approval_sent:
                 # Verify it's requesting the list_tasks tool
                 assert "list_tasks" in response.content
-                actual_tool_id = response.metadata.get("tool_id")
+                actual_tool_id = response.metadata.get("tool_id") if response.metadata else None
                 assert actual_tool_id is not None
 
                 # Send approval with the actual tool_id
@@ -475,7 +491,11 @@ class TestToolApprovalEndToEnd:
                 approval_sent = True
 
             # Break when we see the final response
-            if response.type == ResponseType.TEXT and response.metadata.get("final"):
+            if (
+                response.type == ResponseType.TEXT
+                and response.metadata
+                and response.metadata.get("final")
+            ):
                 break
 
         # Verify we got the expected response types
@@ -485,7 +505,7 @@ class TestToolApprovalEndToEnd:
         assert approval_sent
 
     @pytest.mark.asyncio
-    async def test_full_approval_flow_rejected(self, agent_manager):
+    async def test_full_approval_flow_rejected(self, agent_manager: AgentManager) -> None:
         """Test the full approval flow with rejection."""
         # Configure tool approval
         agent_manager.configure_tool_approval(
@@ -506,7 +526,7 @@ class TestToolApprovalEndToEnd:
 
             # When we see the approval request, send rejection
             if response.type == ResponseType.TOOL_APPROVAL_REQUEST and not rejection_sent:
-                actual_tool_id = response.metadata.get("tool_id")
+                actual_tool_id = response.metadata.get("tool_id") if response.metadata else None
                 assert actual_tool_id is not None
 
                 # Send rejection with the actual tool_id
@@ -520,7 +540,11 @@ class TestToolApprovalEndToEnd:
                 rejection_sent = True
 
             # Break when we see the final response
-            if response.type == ResponseType.TEXT and response.metadata.get("final"):
+            if (
+                response.type == ResponseType.TEXT
+                and response.metadata
+                and response.metadata.get("final")
+            ):
                 break
 
         # Verify we got the expected response types
@@ -532,7 +556,7 @@ class TestToolApprovalEndToEnd:
         assert ResponseType.TOOL_CALL not in response_types
 
     @pytest.mark.asyncio
-    async def test_auto_approved_tools_bypass_approval(self, agent_manager):
+    async def test_auto_approved_tools_bypass_approval(self, agent_manager: AgentManager) -> None:
         """Test that auto-approved tools bypass the approval process."""
         # Configure tool approval
         agent_manager.configure_tool_approval(
@@ -547,6 +571,7 @@ class TestToolApprovalEndToEnd:
         mock_event.content = "Listing tasks"
 
         base_agent = agent_manager.meta_agent
+        assert base_agent is not None
 
         # Process the tool call event - should not require approval
         events = []
@@ -563,10 +588,11 @@ class TestToolApprovalEndToEnd:
         assert "tool_call" in event_stages  # Should proceed directly to execution
 
     @pytest.mark.asyncio
-    async def test_non_approved_tools_require_approval(self, agent_manager):
+    async def test_non_approved_tools_require_approval(self, agent_manager: AgentManager) -> None:
         """Test that non-auto-approved tools wait for approval."""
         # Mock the memory manager to avoid database dependencies
         base_agent = agent_manager.meta_agent
+        assert base_agent is not None
         base_agent.memory_manager = AsyncMock()
         base_agent.memory_manager.record_tool_usage = AsyncMock(return_value="test-tool-id")
         base_agent.memory_manager.update_tool_approval = AsyncMock()
@@ -629,10 +655,11 @@ class TestToolApprovalEndToEnd:
         )
 
     @pytest.mark.asyncio
-    async def test_rejected_tools_are_blocked(self, agent_manager):
+    async def test_rejected_tools_are_blocked(self, agent_manager: AgentManager) -> None:
         """Test that rejected tools are not executed."""
         # Mock the memory manager
         base_agent = agent_manager.meta_agent
+        assert base_agent is not None
         base_agent.memory_manager = AsyncMock()
         base_agent.memory_manager.record_tool_usage = AsyncMock(return_value="test-tool-id")
         base_agent.memory_manager.update_tool_approval = AsyncMock()
@@ -691,7 +718,7 @@ class TestToolApprovalEndToEnd:
         )
 
     @pytest.mark.asyncio
-    async def test_approval_timeout(self, agent_manager):
+    async def test_approval_timeout(self, agent_manager: AgentManager) -> None:
         """Test that approval times out correctly."""
         # Configure with very short timeout
         agent_manager.configure_tool_approval(
@@ -716,7 +743,11 @@ class TestToolApprovalEndToEnd:
                 # Don't send approval - let it timeout
 
             # Break when we see the final response
-            if response.type == ResponseType.TEXT and response.metadata.get("final"):
+            if (
+                response.type == ResponseType.TEXT
+                and response.metadata
+                and response.metadata.get("final")
+            ):
                 break
 
         # Should have seen approval request
@@ -729,7 +760,7 @@ class TestToolApprovalEndToEnd:
         # Note: The timeout event might not appear in the stream since it's handled separately
 
     @pytest.mark.asyncio
-    async def test_selective_tool_approval(self, agent_manager):
+    async def test_selective_tool_approval(self, agent_manager: AgentManager) -> None:
         """Test that only specific tools are auto-approved while others require approval."""
         # Configure with selective auto-approval
         agent_manager.configure_tool_approval(
@@ -739,9 +770,9 @@ class TestToolApprovalEndToEnd:
         )
 
         # Background task to reject non-approved tools
-        rejected_tools = []
+        rejected_tools: list[str] = []
 
-        async def reject_non_time_tools():
+        async def reject_non_time_tools() -> None:
             """Reject any tool that isn't get_current_time."""
             while True:
                 await asyncio.sleep(0.1)
@@ -774,13 +805,14 @@ class TestToolApprovalEndToEnd:
             responses.append(response)
 
             if response.type == ResponseType.TOOL_CALL:
-                tool_name = response.metadata.get("tool_name")
+                tool_name = response.metadata.get("tool_name") if response.metadata else None
                 tools_called.append(tool_name)
             elif response.type == ResponseType.TOOL_APPROVAL_REQUEST:
-                tool_name = response.metadata.get("tool_name")
-                rejected_tools.append(tool_name)
+                tool_name = response.metadata.get("tool_name") if response.metadata else None
+                if tool_name:
+                    rejected_tools.append(tool_name)
             elif response.type == ResponseType.TOOL_REJECTED:
-                tool_name = response.metadata.get("tool_name")
+                tool_name = response.metadata.get("tool_name") if response.metadata else None
                 tools_rejected.append(tool_name)
 
         # Cancel rejection task
@@ -801,7 +833,9 @@ class TestToolApprovalEndToEnd:
                 assert tool in rejected_tools or tool in tools_rejected
 
     @pytest.mark.asyncio
-    async def test_tool_usage_recording_with_approval(self, memory_manager, agent_manager):
+    async def test_tool_usage_recording_with_approval(
+        self, memory_manager: MemoryManager, agent_manager: AgentManager
+    ) -> None:
         """Test that tool usage is properly recorded with approval status."""
         # Configure approval
         agent_manager.configure_tool_approval(
@@ -822,7 +856,7 @@ class TestToolApprovalEndToEnd:
         async for response in agent_manager.chat_stream(message):
             # When we see approval request, send approval
             if response.type == ResponseType.TOOL_APPROVAL_REQUEST and not approval_sent:
-                actual_tool_id = response.metadata.get("tool_id")
+                actual_tool_id = response.metadata.get("tool_id") if response.metadata else None
                 if actual_tool_id:
                     approval = ToolApprovalResponse(
                         tool_id=actual_tool_id,
@@ -833,7 +867,11 @@ class TestToolApprovalEndToEnd:
                     approval_sent = True
 
             # Break on final response
-            if response.type == ResponseType.TEXT and response.metadata.get("final"):
+            if (
+                response.type == ResponseType.TEXT
+                and response.metadata
+                and response.metadata.get("final")
+            ):
                 break
 
         # Give some time for database updates
@@ -850,7 +888,7 @@ class TestToolApprovalEndToEnd:
             # Note: The usage might still be in progress depending on timing
 
     @pytest.mark.asyncio
-    async def test_llm_tool_choice_with_approval(self, agent_manager):
+    async def test_llm_tool_choice_with_approval(self, agent_manager: AgentManager) -> None:
         """Test real LLM behavior with tool approval - handle indeterminism."""
         # Configure approval with a mix of auto-approved and restricted tools
         agent_manager.configure_tool_approval(
@@ -868,11 +906,11 @@ class TestToolApprovalEndToEnd:
 
         for message, expected_tools in test_cases:
             responses = []
-            tool_requests = []
+            tool_requests: list[dict[str, Any]] = []
             tool_calls = []
 
             # Set up approval/rejection based on expected tools
-            async def handle_approvals():
+            async def handle_approvals() -> None:
                 """Auto-approve or reject based on tool safety."""
                 await asyncio.sleep(0.5)  # Let request come in
 
@@ -881,7 +919,7 @@ class TestToolApprovalEndToEnd:
                     if tool_requests:
                         latest_request = tool_requests[-1]
                         tool_name = latest_request.get("tool_name")
-                        tool_id = latest_request.get("tool_id")
+                        tool_id = latest_request.get("tool_id", "")
 
                         if tool_name == "write_file":
                             # Approve file creation
@@ -912,9 +950,11 @@ class TestToolApprovalEndToEnd:
                 responses.append(response)
 
                 if response.type == ResponseType.TOOL_APPROVAL_REQUEST:
-                    tool_requests.append(response.metadata)
+                    if response.metadata:
+                        tool_requests.append(response.metadata)
                 elif response.type == ResponseType.TOOL_CALL:
-                    tool_calls.append(response.metadata.get("tool_name"))
+                    if response.metadata:
+                        tool_calls.append(response.metadata.get("tool_name"))
 
             # Cancel approval task
             approval_task.cancel()

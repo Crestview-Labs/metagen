@@ -59,7 +59,7 @@ def create_test_turn(**kwargs: Any) -> ConversationTurn:
 
 
 @pytest_asyncio.fixture
-async def test_db_manager(tmp_path: Path):
+async def test_db_manager(tmp_path: Path) -> AsyncGenerator[DatabaseManager, None]:
     """Create a test database manager."""
     db_path = tmp_path / "test_robust.db"
     manager = DatabaseManager(db_path)
@@ -69,7 +69,7 @@ async def test_db_manager(tmp_path: Path):
 
 
 @pytest_asyncio.fixture
-async def robust_backend(test_db_manager) -> AsyncGenerator[SQLiteBackend, None]:
+async def robust_backend(test_db_manager: DatabaseManager) -> AsyncGenerator[SQLiteBackend, None]:
     """Create a backend with robustness features enabled."""
     backend = SQLiteBackend(test_db_manager)
     await backend.initialize()
