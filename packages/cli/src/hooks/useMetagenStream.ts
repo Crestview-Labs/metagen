@@ -5,9 +5,9 @@
  */
 
 import { useState, useRef, useCallback } from 'react';
-import { apiClient, ToolApprovalRequest, ToolApprovalResponse } from '@metagen/api-client';
+import { apiClient, ApprovalRequestMessage, ApprovalResponseMessage } from '@metagen/api-client';
 
-export type MessageType = 'user' | 'agent' | 'system' | 'error' | 'thinking' | 'tool_call' | 'tool_result' | 'processing' | 'tool_approval_request' | 'tool_approved' | 'tool_rejected';
+export type MessageType = 'user' | 'agent' | 'system' | 'error' | 'thinking' | 'tool_call' | 'tool_result' | 'processing' | 'approval_request' | 'tool_approved' | 'tool_rejected';
 
 export interface StreamMessage {
   id: string;
@@ -27,7 +27,7 @@ export interface UseMetagenStreamReturn {
   addMessage: (sender: string, content: string, type?: MessageType, metadata?: Record<string, any>) => void;
   clearMessages: () => void;
   handleSlashCommand: (command: string) => Promise<void>;
-  pendingApproval: ToolApprovalRequest | null;
+  pendingApproval: ApprovalRequestMessage | null;
   handleToolDecision: (approved: boolean, feedback?: string) => Promise<void>;
 }
 
@@ -36,7 +36,7 @@ export function useMetagenStream(): UseMetagenStreamReturn {
   const [isResponding, setIsResponding] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [showToolResults, setShowToolResults] = useState(false);
-  const [pendingApproval, setPendingApproval] = useState<ToolApprovalRequest | null>(null);
+  const [pendingApproval, setPendingApproval] = useState<ApprovalRequestMessage | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const addMessage = useCallback((sender: string, content: string, type: MessageType = 'agent', metadata?: Record<string, any>) => {
@@ -254,12 +254,12 @@ export function useMetagenStream(): UseMetagenStreamReturn {
         } else if ((streamResponse.type as string) === 'processing') {
           // Add processing message (keep all previous stages)
           addMessage('system', streamResponse.content, 'processing', streamResponse.metadata);
-        } else if (streamResponse.type === 'tool_approval_request') {
+        } else if (streamResponse.type === 'approval_request') {
           // Extract approval request from metadata
-          const approvalRequest = streamResponse.metadata?.approval_request as ToolApprovalRequest;
+          const approvalRequest = streamResponse.metadata?.approval_request as ApprovalRequestMessage;
           if (approvalRequest) {
             setPendingApproval(approvalRequest);
-            addMessage('system', `🔐 Tool requires approval: ${streamResponse.content}`, 'tool_approval_request', streamResponse.metadata);
+            addMessage('system', `🔐 Tool requires approval: ${streamResponse.content}`, 'approval_request', streamResponse.metadata);
           }
         } else if (streamResponse.type === 'tool_approved') {
           setPendingApproval(null);
@@ -292,11 +292,13 @@ export function useMetagenStream(): UseMetagenStreamReturn {
     if (!pendingApproval) return;
 
     try {
-      const decision: ToolApprovalResponse = {
+      const decision: ApprovalResponseMessage = {
+        type: 'approval_response',
+        direction: 'user_to_agent',
         tool_id: pendingApproval.tool_id,
         decision: approved ? 'approved' : 'rejected',
         feedback: feedback,
-        approved_by: 'user'
+        agent_id: pendingApproval.agent_id
       };
 
       await apiClient.sendToolDecision(decision);

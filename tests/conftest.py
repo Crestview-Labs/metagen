@@ -11,11 +11,17 @@ import pytest
 import pytest_asyncio
 from dotenv import load_dotenv
 
-from db.manager import DatabaseManager
-from memory.storage.manager import MemoryManager
-from memory.storage.memory_models import CompactMemory, LongTermMemory
-from memory.storage.models import ConversationTurn, ToolUsage, ToolUsageStatus, TurnStatus
-from memory.storage.sqlite_backend import SQLiteBackend
+from agents.memory.memory_manager import MemoryManager
+from agents.memory.sqlite_backend import SQLiteBackend
+from common.models import (
+    CompactMemory,
+    ConversationTurn,
+    LongTermMemory,
+    ToolUsage,
+    ToolUsageStatus,
+    TurnStatus,
+)
+from db.engine import DatabaseEngine
 
 # Load environment variables from .env file
 load_dotenv()
@@ -99,22 +105,27 @@ def temp_db_path() -> Any:  # Generator type
 
 
 @pytest_asyncio.fixture
-async def storage_backend(temp_db_path: str) -> Any:  # Generator type
-    """Create a SQLiteBackend instance for testing."""
-    db_manager = DatabaseManager(Path(temp_db_path))
-    await db_manager.initialize()
-
-    backend = SQLiteBackend(db_manager)
-    await backend.initialize()
-    yield backend
-    await backend.close()
-    await db_manager.close()
+async def db_engine(temp_db_path: str) -> Any:  # Generator type
+    """Create a DatabaseEngine instance for testing."""
+    engine = DatabaseEngine(Path(temp_db_path))
+    await engine.initialize()
+    yield engine
+    await engine.close()
 
 
 @pytest_asyncio.fixture
-async def memory_manager(storage_backend: SQLiteBackend) -> Any:  # Generator type
+async def storage_backend(db_engine: DatabaseEngine) -> Any:  # Generator type
+    """Create a storage backend (SQLiteBackend) for low-level testing."""
+    backend = SQLiteBackend(db_engine)
+    await backend.initialize()
+    yield backend
+    await backend.close()
+
+
+@pytest_asyncio.fixture
+async def memory_manager(db_engine: DatabaseEngine) -> Any:  # Generator type
     """Create a MemoryManager instance for testing."""
-    manager = MemoryManager(storage_backend)
+    manager = MemoryManager(db_engine)
     await manager.initialize()
     yield manager
     await manager.close()
@@ -335,6 +346,26 @@ def approved_tool_usage() -> ToolUsage:
         created_at=now - timedelta(minutes=5),
         updated_at=now,
     )
+
+
+@pytest.fixture(autouse=True)
+def reset_tool_registry() -> Any:  # Generator type
+    """Reset the global tool registry before each test."""
+    from tools.registry import get_tool_executor, get_tool_registry
+
+    # Store original state
+    executor = get_tool_executor()
+    registry = get_tool_registry()
+    original_tools = executor.core_tools.copy()
+    original_servers = executor.mcp_servers.copy()
+    original_disabled = registry.disabled_tools.copy()
+
+    yield
+
+    # Reset to original state
+    executor.core_tools = original_tools
+    executor.mcp_servers = original_servers
+    registry.disabled_tools = original_disabled
 
 
 @pytest.fixture

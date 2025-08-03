@@ -5,10 +5,9 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-from client.base_client import BaseClient
-from memory.storage.manager import MemoryManager
-from memory.storage.memory_models import CompactMemory
-from memory.storage.models import ConversationTurn
+from agents.memory.memory_manager import MemoryManager
+from client.llm_client import LLMClient
+from common.models import CompactMemory, ConversationTurn
 from tools.base import BaseLLMTool
 
 logger = logging.getLogger(__name__)
@@ -46,7 +45,7 @@ class MemorySearchTool(BaseLLMTool):
     # - Use Gemini Pro (2M context) for extensive historical searches
     # - Implement dynamic model selection based on memory size
 
-    def __init__(self, memory_manager: MemoryManager, llm_client: BaseClient):
+    def __init__(self, memory_manager: MemoryManager, llm_client: LLMClient):
         instructions = """You are an intelligent memory search system. Given a user's search query,
 analyze the available memories and return the most relevant results.
 
@@ -232,7 +231,7 @@ class CompactConversationOutput(BaseModel):
 class CompactConversationTool(BaseLLMTool):
     """Tool for compacting conversations using LLM."""
 
-    def __init__(self, memory_manager: MemoryManager, llm_client: BaseClient):
+    def __init__(self, memory_manager: MemoryManager, llm_client: LLMClient):
         self.memory_manager = memory_manager
         instructions = """Analyze and compact this conversation into a structured
 memory for the specified agent.
@@ -420,7 +419,7 @@ class BuildLongTermMemoriesOutput(BaseModel):
 class BuildLongTermMemoriesTool(BaseLLMTool):
     """Tool for building long-term memories from compact memories using LLM."""
 
-    def __init__(self, memory_manager: MemoryManager, llm_client: BaseClient):
+    def __init__(self, memory_manager: MemoryManager, llm_client: LLMClient):
         instructions = """Analyze compact memories and build/update long-term
 memories for the agent.
 
@@ -545,7 +544,9 @@ Focus on creating memories that will help personalize and improve future agent i
         for i, memory in enumerate(compact_memories, 1):
             mem_text = f"Compact Memory {i}:"
             mem_text += f"\n  Summary: {memory.summary}"
-            mem_text += f"\n  Key Points: {', '.join(memory.key_points)}"
+            mem_text += (
+                f"\n  Key Points: {', '.join(memory.key_points) if memory.key_points else 'None'}"
+            )
             mem_text += f"\n  Created: {memory.created_at}"
             mem_text += f"\n  Time Range: {memory.start_time} to {memory.end_time}"
             formatted.append(mem_text)

@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Box, Text, useInput, useApp, Spacer, Static } from 'ink';
 import { apiClient, ChatResponse, StreamResponse } from '@metagen/api-client';
+import { ToolApprovalPrompt } from './ToolApprovalPrompt.js';
 
 interface Message {
   id: string;
-  type: 'user' | 'agent' | 'error' | 'system' | 'thinking' | 'tool_call' | 'tool_result' | 'tool_approval_request' | 'tool_approved' | 'tool_rejected';
+  type: 'user' | 'agent' | 'error' | 'system' | 'thinking' | 'tool_call' | 'tool_result' | 'approval_request' | 'tool_approved' | 'tool_rejected';
   content: string;
   timestamp: Date;
   isStreaming?: boolean;
@@ -21,6 +22,10 @@ export const ChatInterface: React.FC = () => {
   const [staticKey, setStaticKey] = useState(0);
   const [isReady, setIsReady] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [pendingApproval, setPendingApproval] = useState<any | null>(null);
+  const [isWaitingForApproval, setIsWaitingForApproval] = useState(false);
+  const [collectingFeedback, setCollectingFeedback] = useState(false);
+  const [feedbackInput, setFeedbackInput] = useState('');
   const { exit } = useApp();
 
   // Check authentication on mount
@@ -47,7 +52,7 @@ export const ChatInterface: React.FC = () => {
     setTimeout(() => setIsReady(true), 100);
   }, []);
 
-  const addMessage = useCallback((sender: string, content: string, type: 'user' | 'agent' | 'error' | 'system' | 'thinking' | 'tool_call' | 'tool_result' | 'tool_approval_request' | 'tool_approved' | 'tool_rejected' = 'agent', metadata?: Record<string, any>) => {
+  const addMessage = useCallback((sender: string, content: string, type: 'user' | 'agent' | 'error' | 'system' | 'thinking' | 'tool_call' | 'tool_result' | 'approval_request' | 'tool_approved' | 'tool_rejected' = 'agent', metadata?: Record<string, any>) => {
     const message: Message = {
       id: `${Date.now()}-${Math.random()}`,
       type,
@@ -57,6 +62,36 @@ export const ChatInterface: React.FC = () => {
     };
     setPendingMessages(prev => [...prev, message]);
   }, []);
+
+  const handleToolApprovalDecision = useCallback(async (approved: boolean, feedback?: string) => {
+    if (!pendingApproval) return;
+    
+    setIsWaitingForApproval(true);
+    
+    try {
+      // Send the approval decision to the API
+      await apiClient.sendToolDecision({
+        tool_id: pendingApproval.tool_id,
+        decision: approved ? 'approved' : 'rejected',
+        feedback: feedback,
+      });
+      
+      // Clear the pending approval and feedback state
+      setPendingApproval(null);
+      setCollectingFeedback(false);
+      setFeedbackInput('');
+      
+      // Add a message to show the decision
+      const statusMsg = approved 
+        ? `🔐 Tool approved: ${pendingApproval.tool_name}`
+        : `🔐 Tool rejected: ${pendingApproval.tool_name}${feedback ? ` (${feedback})` : ''}`;
+      addMessage('system', statusMsg, approved ? 'tool_approved' : 'tool_rejected');
+    } catch (error) {
+      addMessage('system', `❌ Error sending tool decision: ${error instanceof Error ? error.message : error}`, 'error');
+    } finally {
+      setIsWaitingForApproval(false);
+    }
+  }, [pendingApproval, addMessage]);
 
   const handleCommand = useCallback(async (command: string) => {
     const [cmd, ...args] = command.slice(1).split(' ');
@@ -130,6 +165,12 @@ export const ChatInterface: React.FC = () => {
 
   const sendMessage = useCallback(async () => {
     if (!input.trim() || isLoading) return;
+    
+    // Don't allow sending messages while there's a pending approval
+    if (pendingApproval) {
+      addMessage('system', '⚠️  Please respond to the tool approval request first (Y/N/D)', 'system');
+      return;
+    }
 
     const userMessage = input.trim();
     setInput('');
@@ -159,9 +200,18 @@ export const ChatInterface: React.FC = () => {
         }
         
         // Handle different response types
-        const messageType = streamResponse.type === 'text' ? 'agent' : streamResponse.type as Message['type'];
-        
-        addMessage('agent', streamResponse.content, messageType, streamResponse.metadata);
+        if (streamResponse.type === 'approval_request') {
+          // Extract approval request data
+          const approvalRequest = streamResponse.metadata?.approval_request;
+          if (approvalRequest) {
+            setPendingApproval(approvalRequest);
+            // Still add the message to the chat
+            addMessage('agent', streamResponse.content, 'approval_request', streamResponse.metadata);
+          }
+        } else {
+          const messageType = streamResponse.type === 'text' ? 'agent' : streamResponse.type as Message['type'];
+          addMessage('agent', streamResponse.content, messageType, streamResponse.metadata);
+        }
       }
       
     } catch (error) {
@@ -188,6 +238,42 @@ export const ChatInterface: React.FC = () => {
       return;
     }
 
+    // Handle feedback collection
+    if (collectingFeedback) {
+      if (key.return) {
+        // Submit rejection with feedback
+        handleToolApprovalDecision(false, feedbackInput.trim() || undefined);
+        setCollectingFeedback(false);
+        setFeedbackInput('');
+        return;
+      }
+      
+      if (key.backspace || key.delete) {
+        setFeedbackInput(prev => prev.slice(0, -1));
+        return;
+      }
+      
+      if (input && !key.ctrl && !key.meta) {
+        setFeedbackInput(prev => prev + input);
+      }
+      return;
+    }
+
+    // Handle tool approval shortcuts
+    if (pendingApproval && !isWaitingForApproval) {
+      if (input?.toLowerCase() === 'y') {
+        handleToolApprovalDecision(true);
+        return;
+      } else if (input?.toLowerCase() === 'n') {
+        setCollectingFeedback(true);
+        return;
+      } else if (input?.toLowerCase() === 'd') {
+        // TODO: Show details view
+        addMessage('system', 'Details view not yet implemented', 'system');
+        return;
+      }
+    }
+
     if (key.return) {
       sendMessage();
       return;
@@ -198,7 +284,7 @@ export const ChatInterface: React.FC = () => {
       return;
     }
 
-    if (input && !key.ctrl && !key.meta) {
+    if (input && !key.ctrl && !key.meta && !pendingApproval) {
       setInput(prev => prev + input);
     }
   });
@@ -221,7 +307,7 @@ export const ChatInterface: React.FC = () => {
       case 'thinking': return '🤔';
       case 'tool_call': return '🔧';
       case 'tool_result': return '📊';
-      case 'tool_approval_request': return '🔐';
+      case 'approval_request': return '🔐';
       case 'tool_approved': return '✅';
       case 'tool_rejected': return '❌';
       default: return '📝';
@@ -237,7 +323,7 @@ export const ChatInterface: React.FC = () => {
       case 'thinking': return 'yellow';
       case 'tool_call': return 'magenta';
       case 'tool_result': return 'cyan';
-      case 'tool_approval_request': return 'yellow';
+      case 'approval_request': return 'yellow';
       case 'tool_approved': return 'green';
       case 'tool_rejected': return 'red';
       default: return 'white';
@@ -274,11 +360,30 @@ export const ChatInterface: React.FC = () => {
         </Box>
       ))}
       
-      {/* Input area */}
-      <Box marginTop={1}>
-        <Text>{'>'} {input}</Text>
-        {isLoading && <Text color="yellow"> [Thinking...]</Text>}
-      </Box>
+      {/* Input area or Tool Approval Prompt */}
+      {pendingApproval ? (
+        collectingFeedback ? (
+          <Box marginTop={1} borderStyle="round" borderColor="yellow" padding={1}>
+            <Box flexDirection="column">
+              <Text color="yellow">Rejection reason (optional, press Enter to skip):</Text>
+              <Box marginTop={1}>
+                <Text>{'> '}{feedbackInput}</Text>
+              </Box>
+            </Box>
+          </Box>
+        ) : (
+          <ToolApprovalPrompt
+            approval={pendingApproval}
+            onDecision={handleToolApprovalDecision}
+            isResponding={isWaitingForApproval}
+          />
+        )
+      ) : (
+        <Box marginTop={1}>
+          <Text>{'>'} {input}</Text>
+          {isLoading && <Text color="yellow"> [Thinking...]</Text>}
+        </Box>
+      )}
     </Box>
   );
 };

@@ -1,98 +1,102 @@
 """Tests for tool approval functionality in agents."""
 
 import asyncio
+import logging
 from typing import Any, AsyncIterator
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
 
-from agents.agent_manager import AgentManager, ResponseType
+from agents.agent_manager import AgentManager
 from agents.base import BaseAgent
-from agents.tool_approval import ToolApprovalDecision, ToolApprovalRequest, ToolApprovalResponse
-from memory import MemoryManager, SQLiteBackend
+from agents.memory import MemoryManager
+from common.messages import (
+    AgentMessage,
+    ApprovalDecision,
+    ApprovalRequestMessage,
+    ApprovalResponseMessage,
+    Message,
+    MessageType,
+    ToolCallMessage,
+    ToolCallRequest,
+    ToolStartedMessage,
+    UsageMessage,
+    UserMessage,
+)
+from common.models import ToolExecutionStage
+from common.types import ToolCallResult
+from tools.base import BaseCoreTool
+from tools.registry import get_tool_executor
+
+logger = logging.getLogger(__name__)
 
 
 class TestToolApprovalDataClasses:
     """Test the tool approval data classes."""
 
     def test_tool_approval_request_creation(self) -> None:
-        """Test creating a ToolApprovalRequest."""
-        request = ToolApprovalRequest(
+        """Test creating an ApprovalRequestMessage."""
+        request = ApprovalRequestMessage(
             tool_id="test-123",
             tool_name="write_file",
             tool_args={"path": "/tmp/test.txt", "content": "hello"},
             agent_id="METAGEN",
-            description="Write a test file",
-            risk_level="medium",
         )
 
         assert request.tool_id == "test-123"
         assert request.tool_name == "write_file"
         assert request.tool_args == {"path": "/tmp/test.txt", "content": "hello"}
         assert request.agent_id == "METAGEN"
-        assert request.description == "Write a test file"
-        assert request.risk_level == "medium"
 
     def test_tool_approval_request_to_dict(self) -> None:
-        """Test converting ToolApprovalRequest to dict."""
-        request = ToolApprovalRequest(
+        """Test converting ApprovalRequestMessage to dict."""
+        request = ApprovalRequestMessage(
             tool_id="test-123",
             tool_name="write_file",
             tool_args={"path": "/tmp/test.txt"},
             agent_id="METAGEN",
         )
 
-        data = request.to_dict()
+        data = request.model_dump()
         assert data["tool_id"] == "test-123"
         assert data["tool_name"] == "write_file"
         assert data["tool_args"] == {"path": "/tmp/test.txt"}
         assert data["agent_id"] == "METAGEN"
-        assert data["description"] is None
-        assert data["risk_level"] is None
+        # ApprovalRequestMessage doesn't have description or risk_level fields
 
     def test_tool_approval_response_creation(self) -> None:
-        """Test creating a ToolApprovalResponse."""
-        response = ToolApprovalResponse(
+        """Test creating an ApprovalResponseMessage."""
+        response = ApprovalResponseMessage(
             tool_id="test-123",
-            decision=ToolApprovalDecision.APPROVED,
+            decision=ApprovalDecision.APPROVED,
             feedback=None,
-            approved_by="user",
+            agent_id="METAGEN",
         )
 
         assert response.tool_id == "test-123"
-        assert response.decision == ToolApprovalDecision.APPROVED
+        assert response.decision == ApprovalDecision.APPROVED
         assert response.feedback is None
-        assert response.approved_by == "user"
+        assert response.agent_id == "METAGEN"
 
     def test_tool_approval_response_with_rejection(self) -> None:
         """Test creating a rejection response with feedback."""
-        response = ToolApprovalResponse(
+        response = ApprovalResponseMessage(
             tool_id="test-123",
-            decision=ToolApprovalDecision.REJECTED,
+            decision=ApprovalDecision.REJECTED,
             feedback="This operation seems unsafe",
-            approved_by="admin",
+            agent_id="METAGEN",
         )
 
         assert response.tool_id == "test-123"
-        assert response.decision == ToolApprovalDecision.REJECTED
+        assert response.decision == ApprovalDecision.REJECTED
         assert response.feedback == "This operation seems unsafe"
-        assert response.approved_by == "admin"
-
-    def test_tool_approval_response_timeout(self) -> None:
-        """Test creating a timeout response."""
-        response = ToolApprovalResponse.timeout("test-123")
-
-        assert response.tool_id == "test-123"
-        assert response.decision == ToolApprovalDecision.TIMEOUT
-        assert response.feedback == "Approval request timed out"
-        assert response.approved_by == "system"
+        assert response.agent_id == "METAGEN"
 
     def test_tool_approval_decision_enum(self) -> None:
-        """Test ToolApprovalDecision enum values."""
-        assert ToolApprovalDecision.APPROVED == "approved"
-        assert ToolApprovalDecision.REJECTED == "rejected"
-        assert ToolApprovalDecision.TIMEOUT == "timeout"
+        """Test ApprovalDecision enum values."""
+        assert ApprovalDecision.APPROVED == "approved"
+        assert ApprovalDecision.REJECTED == "rejected"
 
 
 class TestBaseAgentToolApprovalMocked:
@@ -124,15 +128,15 @@ class TestBaseAgentToolApprovalMocked:
         class TestAgent(BaseAgent):
             """Test implementation of BaseAgent."""
 
-            async def build_context(self, query: str) -> list[dict[str, Any]]:
+            async def build_context(self, query: str) -> list[Message]:
                 """Dummy implementation."""
                 return []
 
         agent = TestAgent(
             agent_id="TEST_AGENT",
             instructions="Test instructions",
-            agentic_client=mock_agentic_client,
             memory_manager=mock_memory_manager,
+            available_tools=[],  # No tools for this test
         )
         await agent.initialize()
         return agent
@@ -140,312 +144,472 @@ class TestBaseAgentToolApprovalMocked:
     @pytest.mark.asyncio
     async def test_configure_tool_approval(self, base_agent: BaseAgent) -> None:
         """Test configuring tool approval settings."""
-        approval_queue: asyncio.Queue[ToolApprovalResponse] = asyncio.Queue()
+        # Create a mock queue for approval
+        approval_queue: asyncio.Queue[Message] = asyncio.Queue()
 
         base_agent.configure_tool_approval(
             require_approval=True,
-            auto_approve_tools={"read_file", "list_files"},
-            approval_timeout=10.0,
-            approval_response_queue=approval_queue,
+            auto_approve_tools=["read_file", "list_files"],
+            approval_queue=approval_queue,
         )
 
         assert base_agent._require_tool_approval is True
         assert base_agent._auto_approve_tools == {"read_file", "list_files"}
-        assert base_agent._approval_timeout == 10.0
-        assert base_agent._approval_response_queue == approval_queue
+        assert base_agent._approval_queue == approval_queue
 
     @pytest.mark.asyncio
-    async def test_configure_tool_approval_without_queue_raises_error(
-        self, base_agent: BaseAgent
-    ) -> None:
-        """Test that configuring approval without queue raises ValueError."""
-        with pytest.raises(ValueError, match="approval_response_queue must be provided"):
-            base_agent.configure_tool_approval(require_approval=True)
-
     @pytest.mark.asyncio
     async def test_process_approval_response_approved(
         self, base_agent: BaseAgent, mock_memory_manager: AsyncMock
     ) -> None:
         """Test processing approval response when approved."""
-        from agents.tool_approval import ToolPendingApproval
+        from agents.tool_tracker import ToolTracker, TrackedTool
 
-        base_agent.configure_tool_approval(
-            require_approval=True, approval_timeout=30.0, approval_response_queue=asyncio.Queue()
+        approval_queue: asyncio.Queue[Message] = asyncio.Queue()
+        base_agent.configure_tool_approval(require_approval=True, approval_queue=approval_queue)
+
+        # Create a tool tracker and add a pending tool
+        base_agent._tool_tracker = ToolTracker(
+            memory_manager=mock_memory_manager, agent_id="TEST_AGENT"
         )
 
-        # Create a pending approval
-        pending = ToolPendingApproval(
+        tracked_tool = TrackedTool(
             tool_id="tool-123",
             tool_name="write_file",
             tool_args={"path": "/tmp/test.txt"},
+            stage=ToolExecutionStage.PENDING_APPROVAL,
+            agent_id="TEST_AGENT",
             turn_id="turn-123",
-            trace_id="trace-123",
-            tool_usage_id="tool-123",
         )
-        base_agent._pending_approvals["tool-123"] = pending
+        await base_agent._tool_tracker.add_tool(tracked_tool)
 
         # Create approval response
-        approval_response = ToolApprovalResponse(
-            tool_id="tool-123", decision=ToolApprovalDecision.APPROVED, approved_by="user"
+        approval_response = ApprovalResponseMessage(
+            tool_id="tool-123", decision=ApprovalDecision.APPROVED, agent_id="METAGEN"
         )
 
-        # Process the approval
-        events = []
-        async for event in base_agent.process_approval_response(approval_response):
-            events.append(event)
+        # Process the approval (no events yielded in new implementation)
+        await base_agent._process_approval_response(approval_response)
 
-        # Should have approval and tool call events
-        assert len(events) == 2
-        assert events[0]["stage"] == "tool_approved"
-        assert events[1]["stage"] == "tool_call"
-
-        # Check that approval was recorded in database
-        mock_memory_manager.update_tool_approval.assert_called_once_with(
-            "tool-123", approved=True, user_feedback=None
-        )
-
-        # Pending approval should be removed
-        assert "tool-123" not in base_agent._pending_approvals
+        # Verify the tool was approved in the tracker
+        approved_tool = base_agent._tool_tracker.get_tool("tool-123")
+        assert approved_tool is not None
+        assert approved_tool.stage == ToolExecutionStage.APPROVED
 
     @pytest.mark.asyncio
     async def test_process_approval_response_rejected(
         self, base_agent: BaseAgent, mock_memory_manager: AsyncMock
     ) -> None:
         """Test processing approval response when rejected."""
-        from agents.tool_approval import ToolPendingApproval
+        from agents.tool_tracker import ToolTracker, TrackedTool
 
-        base_agent.configure_tool_approval(
-            require_approval=True, approval_timeout=30.0, approval_response_queue=asyncio.Queue()
+        approval_queue: asyncio.Queue[Message] = asyncio.Queue()
+        base_agent.configure_tool_approval(require_approval=True, approval_queue=approval_queue)
+
+        # Create a tool tracker and add a pending tool
+        base_agent._tool_tracker = ToolTracker(
+            memory_manager=mock_memory_manager, agent_id="TEST_AGENT"
         )
 
-        # Create a pending approval
-        pending = ToolPendingApproval(
+        tracked_tool = TrackedTool(
             tool_id="tool-123",
             tool_name="delete_file",
             tool_args={"path": "/important.txt"},
+            stage=ToolExecutionStage.PENDING_APPROVAL,
+            agent_id="TEST_AGENT",
             turn_id="turn-123",
-            trace_id="trace-123",
-            tool_usage_id="tool-123",
         )
-        base_agent._pending_approvals["tool-123"] = pending
+        await base_agent._tool_tracker.add_tool(tracked_tool)
 
         # Create rejection response
-        approval_response = ToolApprovalResponse(
+        approval_response = ApprovalResponseMessage(
             tool_id="tool-123",
-            decision=ToolApprovalDecision.REJECTED,
+            decision=ApprovalDecision.REJECTED,
             feedback="Too dangerous",
-            approved_by="admin",
+            agent_id="METAGEN",
         )
 
-        # Process the rejection
-        events = []
-        async for event in base_agent.process_approval_response(approval_response):
-            events.append(event)
+        # Process the rejection (no events yielded in new implementation)
+        await base_agent._process_approval_response(approval_response)
 
-        # Should have rejection event only
-        assert len(events) == 1
-        assert events[0]["stage"] == "tool_rejected"
-        assert events[0]["metadata"]["feedback"] == "Too dangerous"
-
-        # Check that rejection was recorded in database
-        mock_memory_manager.update_tool_approval.assert_called_once_with(
-            "tool-123", approved=False, user_feedback="Too dangerous"
-        )
-
-        # Pending approval should be removed
-        assert "tool-123" not in base_agent._pending_approvals
-
-    @pytest.mark.asyncio
-    async def test_check_expired_approvals(
-        self, base_agent: BaseAgent, mock_memory_manager: AsyncMock
-    ) -> None:
-        """Test checking for expired approvals."""
-        from agents.tool_approval import ToolPendingApproval
-
-        base_agent.configure_tool_approval(
-            require_approval=True,
-            approval_timeout=0.1,  # Very short timeout
-            approval_response_queue=asyncio.Queue(),
-        )
-
-        # Create a pending approval that will expire
-        pending = ToolPendingApproval(
-            tool_id="tool-123",
-            tool_name="execute_command",
-            tool_args={"command": "rm -rf /"},
-            turn_id="turn-123",
-            trace_id="trace-123",
-            tool_usage_id="tool-123",
-        )
-        base_agent._pending_approvals["tool-123"] = pending
-
-        # Wait for it to expire
-        await asyncio.sleep(0.2)
-
-        # Check for expired approvals
-        timeout_events = await base_agent.check_expired_approvals()
-
-        # Should have one timeout event
-        assert len(timeout_events) == 1
-        assert timeout_events[0]["stage"] == "tool_rejected"
-        assert "timed out" in timeout_events[0]["content"]
-        assert timeout_events[0]["metadata"]["decision"] == ToolApprovalDecision.TIMEOUT.value
-
-        # Pending approval should be removed
-        assert "tool-123" not in base_agent._pending_approvals
+        # Verify the tool was rejected in the tracker
+        rejected_tool = base_agent._tool_tracker.get_tool("tool-123")
+        assert rejected_tool is not None
+        assert rejected_tool.stage == ToolExecutionStage.REJECTED
+        assert rejected_tool.user_feedback == "Too dangerous"
 
     @pytest.mark.asyncio
     async def test_process_approval_response_late(
         self, base_agent: BaseAgent, mock_memory_manager: AsyncMock
     ) -> None:
         """Test processing approval response after timeout."""
-        base_agent.configure_tool_approval(
-            require_approval=True, approval_timeout=30.0, approval_response_queue=asyncio.Queue()
+        approval_queue: asyncio.Queue[Message] = asyncio.Queue()
+        base_agent.configure_tool_approval(require_approval=True, approval_queue=approval_queue)
+
+        # No tool tracker active (simulates late approval)
+        base_agent._tool_tracker = None
+
+        # Create approval response
+        approval_response = ApprovalResponseMessage(
+            tool_id="tool-123", decision=ApprovalDecision.APPROVED, agent_id="METAGEN"
         )
 
-        # No pending approval (already timed out)
-        approval_response = ToolApprovalResponse(
-            tool_id="tool-123", decision=ToolApprovalDecision.APPROVED, approved_by="user"
+        # Process the late approval - should log error but not crash
+        await base_agent._process_approval_response(approval_response)
+
+        # Since there's no active tracker, nothing should be updated
+        mock_memory_manager.update_tool_approval.assert_not_called()
+
+
+class TestBaseAgentToolApprovalPublicAPI:
+    """Test tool approval through the public stream_chat API."""
+
+    @pytest.fixture
+    def mock_memory_manager(self) -> AsyncMock:
+        """Create a mock memory manager."""
+        manager = AsyncMock()
+        manager.record_tool_usage = AsyncMock(return_value="tool-usage-123")
+        manager.update_tool_approval = AsyncMock()
+        manager.start_tool_execution = AsyncMock()
+        manager.complete_tool_execution = AsyncMock()
+        manager.create_turn = AsyncMock(return_value="turn-123")
+        manager.complete_turn = AsyncMock()
+        return manager
+
+    @pytest_asyncio.fixture
+    async def simple_agent(self, mock_memory_manager: AsyncMock) -> BaseAgent:
+        """Create a simple BaseAgent with mocked tools."""
+        from pydantic import BaseModel, Field
+
+        # Define schemas for the tools
+        class WriteInput(BaseModel):
+            path: str = Field(description="Path to file")
+            content: str = Field(description="Content to write")
+
+        class WriteOutput(BaseModel):
+            success: bool
+            message: str
+
+        class ReadInput(BaseModel):
+            path: str = Field(description="Path to file")
+
+        class ReadOutput(BaseModel):
+            content: str
+
+        class MockWriteFileTool(BaseCoreTool):
+            def __init__(self) -> None:
+                super().__init__(
+                    name="write_file",
+                    description="Write content to a file",
+                    input_schema=WriteInput,
+                    output_schema=WriteOutput,
+                )
+
+            def get_function_schema(self) -> dict:
+                return {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                    "required": ["path", "content"],
+                }
+
+            async def _execute_impl(self, input_data: BaseModel) -> BaseModel:
+                # Mock implementation - just return a simple output
+                return WriteOutput(success=True, message="Written successfully")
+
+            async def execute(self, params: dict[str, Any]) -> ToolCallResult:
+                path = params.get("path", "")
+                return ToolCallResult(
+                    tool_name=self.name,
+                    tool_call_id="write-123",
+                    content=f"Written to {path}",
+                    is_error=False,
+                    error=None,
+                    error_type=None,
+                    user_display=None,
+                )
+
+        class MockReadFileTool(BaseCoreTool):
+            def __init__(self) -> None:
+                super().__init__(
+                    name="read_file",
+                    description="Read a file",
+                    input_schema=ReadInput,
+                    output_schema=ReadOutput,
+                )
+
+            def get_function_schema(self) -> dict:
+                return {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                }
+
+            async def _execute_impl(self, input_data: BaseModel) -> BaseModel:
+                # Mock implementation
+                return ReadOutput(content="Mock file content")
+
+            async def execute(self, params: dict[str, Any]) -> ToolCallResult:
+                path = params.get("path", "")
+                return ToolCallResult(
+                    tool_name=self.name,
+                    tool_call_id="read-123",
+                    content=f"Content of {path}",
+                    is_error=False,
+                    error=None,
+                    error_type=None,
+                    user_display=None,
+                )
+
+        class TestAgent(BaseAgent):
+            async def build_context(self, query: str) -> list[Message]:
+                return []
+
+        # Create tool instances
+        write_tool = MockWriteFileTool()
+        read_tool = MockReadFileTool()
+
+        # Register tools with the executor (so they can be executed)
+        executor = get_tool_executor()
+        executor.register_core_tool(write_tool)
+        executor.register_core_tool(read_tool)
+
+        # Create agent with tool schemas and LLM client
+        mock_llm_client = AsyncMock()
+        agent = TestAgent(
+            agent_id="TEST_AGENT",
+            instructions="Test agent",
+            memory_manager=mock_memory_manager,
+            available_tools=[write_tool.get_tool_schema(), read_tool.get_tool_schema()],
+            llm_client=mock_llm_client,
         )
+        await agent.initialize()
 
-        # Process the late approval
-        events = []
-        async for event in base_agent.process_approval_response(approval_response):
-            events.append(event)
+        # Configure the mock LLM to return tool calls
+        call_count = 0
 
-        # Should have late approval event
-        assert len(events) == 1
-        assert events[0]["stage"] == "tool_approval_late"
-        assert "too late" in events[0]["content"]
+        async def mock_generate_stream(*args: Any, **kwargs: Any) -> Any:
+            nonlocal call_count
+            call_count += 1
 
-        # Database should still be updated for record keeping
-        mock_memory_manager.update_tool_approval.assert_called_once_with(
-            "tool-123", approved=True, user_feedback="Received after timeout"
-        )
+            # Check the messages to determine what to return
+            messages = args[0]
+            last_msg = messages[-1].content if messages else ""
+
+            # Check if we have tool results in kwargs (indicates second call)
+            has_tool_results = kwargs.get("tool_results") is not None
+
+            if "write" in last_msg.lower() and not has_tool_results:
+                # First call - return a write_file tool call
+                yield AgentMessage(content="I'll write that file for you.")
+                yield ToolCallMessage(
+                    tool_calls=[
+                        ToolCallRequest(
+                            tool_id="write-123",
+                            tool_name="write_file",
+                            tool_args={"path": "/tmp/test.txt", "content": "test"},
+                        )
+                    ]
+                )
+            elif "read" in last_msg.lower() and not has_tool_results:
+                # First call - return a read_file tool call
+                yield AgentMessage(content="I'll read that file for you.")
+                yield ToolCallMessage(
+                    tool_calls=[
+                        ToolCallRequest(
+                            tool_id="read-123",
+                            tool_name="read_file",
+                            tool_args={"path": "/tmp/test.txt"},
+                        )
+                    ]
+                )
+            elif has_tool_results:
+                # Second call after tool execution - just return a final message
+                yield AgentMessage(content="Operation completed successfully.")
+            else:
+                yield AgentMessage(content="I don't understand.")
+
+            yield UsageMessage(input_tokens=10, output_tokens=20, total_tokens=30)
+
+        # Set the mock to return the async generator
+        mock_llm_client.generate_stream_with_tools = mock_generate_stream
+
+        return agent
 
     @pytest.mark.asyncio
-    async def test_handle_tool_call_event_with_approval(
-        self, base_agent: BaseAgent, mock_memory_manager: AsyncMock
+    @pytest.mark.timeout(10)  # 10 second timeout
+    async def test_tool_requiring_approval_through_stream_chat(
+        self, simple_agent: BaseAgent
     ) -> None:
-        """Test handling tool call event that requires approval."""
-        base_agent.configure_tool_approval(
+        """Test that tools requiring approval emit ApprovalRequestMessage and wait."""
+        # Configure to require approval
+        approval_queue: asyncio.Queue[Message] = asyncio.Queue()
+        simple_agent.configure_tool_approval(
             require_approval=True,
-            auto_approve_tools={"read_file"},
-            approval_timeout=30.0,
-            approval_response_queue=asyncio.Queue(),
+            auto_approve_tools=[],  # No auto-approved tools
+            approval_queue=approval_queue,
         )
 
-        # Create mock event
-        mock_event = MagicMock()
-        mock_event.metadata = {
-            "tool_name": "write_file",
-            "tool_args": {"path": "tests/tmpdir/test.txt"},
-        }
-        mock_event.content = "Writing file"
+        messages_received: list[Message] = []
+        approval_sent = False
 
-        # Mock record_tool_usage to return a tool ID
-        mock_memory_manager.record_tool_usage.return_value = "usage-123"
+        # Create a task to send approval after seeing the request
+        async def approve_after_request() -> None:
+            nonlocal approval_sent
+            logger.info("Approval task started")
+            # Wait for approval request
+            while True:
+                await asyncio.sleep(0.05)  # Small delay to let messages accumulate
+                logger.debug(
+                    f"Checking for approval requests... Messages so far: {len(messages_received)}"
+                )
 
-        # Call handler
-        events = []
-        async for event in base_agent._handle_tool_call_event(
-            event=mock_event, turn_id="turn-123", trace_id="trace-123", tool_usage_map={}
-        ):
-            events.append(event)
+                # Look for approval request
+                for msg in messages_received:
+                    if isinstance(msg, ApprovalRequestMessage) and not approval_sent:
+                        logger.info(
+                            f"Found approval request for tool: {msg.tool_name}, id: {msg.tool_id}"
+                        )
+                        # Process the approval directly (simulating what stream_chat does)
+                        approval = ApprovalResponseMessage(
+                            tool_id=msg.tool_id,
+                            decision=ApprovalDecision.APPROVED,
+                            agent_id=simple_agent.agent_id,
+                        )
+                        logger.info("Sending approval response...")
+                        await simple_agent._process_approval_response(approval)
+                        approval_sent = True
+                        logger.info("Approval sent!")
+                        return
 
-        # Should only have approval request event (non-blocking!)
-        assert len(events) == 1
-        assert events[0]["stage"] == "tool_approval_request"
-        assert "write_file" in events[0]["content"]
+        # Start approval task
+        approval_task = asyncio.create_task(approve_after_request())
 
-        # Tool should be recorded as requiring approval
-        mock_memory_manager.record_tool_usage.assert_called_once_with(
-            turn_id="turn-123",
-            entity_id="TEST_AGENT",
-            tool_name="write_file",
-            tool_args={"path": "tests/tmpdir/test.txt"},
-            requires_approval=True,
-            trace_id="trace-123",
-        )
+        try:
+            # Send a message that will trigger write_file tool
+            user_msg = UserMessage(content="Write test content to a file")
+            logger.info("Sending user message to stream_chat...")
+            async for msg in simple_agent.stream_chat(user_msg):
+                logger.info(f"Received message: {type(msg).__name__}")
+                messages_received.append(msg)
 
-        # Should have pending approval
-        assert "usage-123" in base_agent._pending_approvals
-        pending = base_agent._pending_approvals["usage-123"]
-        assert pending.tool_name == "write_file"
+                # Log specific message types
+                if isinstance(msg, ApprovalRequestMessage):
+                    logger.info(f"  -> Approval request for: {msg.tool_name} (id: {msg.tool_id})")
+                elif isinstance(msg, ToolStartedMessage):
+                    logger.info(f"  -> Tool started: {msg.tool_name}")
+                elif isinstance(msg, ToolCallMessage):
+                    logger.info(f"  -> Tool call: {[tc.tool_name for tc in msg.tool_calls]}")
 
-        # Tool should NOT be started yet
-        mock_memory_manager.start_tool_execution.assert_not_called()
+            logger.info("Stream completed")
+        finally:
+            # Ensure approval task is cancelled
+            logger.info("Cancelling approval task...")
+            approval_task.cancel()
+            try:
+                await approval_task
+            except asyncio.CancelledError:
+                pass
+
+        # Verify we got the expected message types
+        message_types = [type(msg).__name__ for msg in messages_received]
+        logger.info(f"All message types received: {message_types}")
+
+        # Check basic flow
+        assert "ThinkingMessage" in message_types
+        assert "AgentMessage" in message_types
+        assert "ToolCallMessage" in message_types
+        assert "ApprovalRequestMessage" in message_types
+        assert "ToolStartedMessage" in message_types
+
+        # Verify the approval request was for write_file
+        approval_requests = [m for m in messages_received if isinstance(m, ApprovalRequestMessage)]
+        assert len(approval_requests) == 1
+        assert approval_requests[0].tool_name == "write_file"
 
     @pytest.mark.asyncio
-    async def test_handle_tool_call_event_auto_approved(
-        self, base_agent: BaseAgent, mock_memory_manager: AsyncMock
-    ) -> None:
-        """Test handling tool call event that is auto-approved."""
-        base_agent.configure_tool_approval(
-            require_approval=True,
-            auto_approve_tools={"read_file"},
-            approval_timeout=1.0,
-            approval_response_queue=asyncio.Queue(),
+    async def test_auto_approved_tool_bypasses_approval(self, simple_agent: BaseAgent) -> None:
+        """Test that auto-approved tools don't emit ApprovalRequestMessage."""
+        # Configure with read_file as auto-approved
+        approval_queue: asyncio.Queue[Message] = asyncio.Queue()
+        simple_agent.configure_tool_approval(
+            require_approval=True, auto_approve_tools=["read_file"], approval_queue=approval_queue
         )
 
-        # Create mock event for auto-approved tool
-        mock_event = MagicMock()
-        mock_event.metadata = {
-            "tool_name": "read_file",
-            "tool_args": {"path": "tests/tmpdir/test.txt"},
-        }
-        mock_event.content = "Reading file"
+        messages_received = []
 
-        # Call handler
-        events = []
-        async for event in base_agent._handle_tool_call_event(
-            event=mock_event, turn_id="turn-123", trace_id="trace-123", tool_usage_map={}
-        ):
-            events.append(event)
+        # Send a message that will trigger read_file tool
+        user_msg = UserMessage(content="Read the file at /tmp/test.txt")
+        async for msg in simple_agent.stream_chat(user_msg):
+            messages_received.append(msg)
 
-        # Should only have tool call event (no approval needed)
-        assert len(events) == 1
-        assert events[0]["stage"] == "tool_call"
+        # Verify no approval request was sent
+        message_types = [type(msg).__name__ for msg in messages_received]
+        assert "ApprovalRequestMessage" not in message_types
+        assert "ToolCallMessage" in message_types
+        assert "ToolStartedMessage" in message_types
 
-        # Tool should be recorded as not requiring approval
-        mock_memory_manager.record_tool_usage.assert_called_once_with(
-            turn_id="turn-123",
-            entity_id="TEST_AGENT",
-            tool_name="read_file",
-            tool_args={"path": "tests/tmpdir/test.txt"},
-            requires_approval=False,  # Auto-approved
-            trace_id="trace-123",
+    @pytest.mark.asyncio
+    async def test_rejected_tool_does_not_execute(self, simple_agent: BaseAgent) -> None:
+        """Test that rejected tools don't execute."""
+        # Configure to require approval
+        approval_queue: asyncio.Queue[Message] = asyncio.Queue()
+        simple_agent.configure_tool_approval(
+            require_approval=True, auto_approve_tools=[], approval_queue=approval_queue
         )
+
+        messages_received = []
+
+        # Send a message that will trigger write_file tool
+        user_msg = UserMessage(content="Write dangerous content to system file")
+        async for msg in simple_agent.stream_chat(user_msg):
+            messages_received.append(msg)
+
+            # If we get an approval request, reject it
+            if isinstance(msg, ApprovalRequestMessage):
+                rejection = ApprovalResponseMessage(
+                    tool_id=msg.tool_id,
+                    decision=ApprovalDecision.REJECTED,
+                    feedback="Too dangerous",
+                    agent_id=simple_agent.agent_id,
+                )
+                # Process rejection
+                async for response_msg in simple_agent.stream_chat(rejection):
+                    messages_received.append(response_msg)
+
+        # Verify tool was not executed
+        message_types = [type(msg).__name__ for msg in messages_received]
+        assert "ApprovalRequestMessage" in message_types
+        assert "ToolStartedMessage" not in message_types
+        assert "ToolResultMessage" not in message_types
 
 
 class TestToolApprovalEndToEnd:
     """End-to-end tests for tool approval functionality."""
 
     @pytest_asyncio.fixture
-    async def test_db_manager(self, tmp_path: Any) -> AsyncIterator[Any]:
-        """Create a test database manager."""
-        from db.manager import DatabaseManager
+    async def test_db_engine(self, tmp_path: Any) -> AsyncIterator[Any]:
+        """Create a test database engine."""
+        from db.engine import DatabaseEngine
 
         db_path = tmp_path / "test_approval.db"
-        manager = DatabaseManager(db_path)
-        await manager.initialize()
-        yield manager
-        await manager.close()
+        engine = DatabaseEngine(db_path)
+        await engine.initialize()
+        yield engine
+        await engine.close()
 
     @pytest_asyncio.fixture
-    async def memory_manager(self, test_db_manager: Any) -> MemoryManager:
+    async def memory_manager(self, test_db_engine: Any) -> MemoryManager:
         """Create a real memory manager."""
-        backend = SQLiteBackend(test_db_manager)
-        manager = MemoryManager(backend)
+        manager = MemoryManager(test_db_engine)
         await manager.initialize()
         return manager
 
     @pytest_asyncio.fixture
-    async def agent_manager(self, test_db_manager: Any) -> AsyncIterator[AgentManager]:
+    async def agent_manager(self, test_db_engine: Any) -> AsyncIterator[AgentManager]:
         """Create a real AgentManager."""
         manager = AgentManager(
             agent_name="TestManager",
-            db_manager=test_db_manager,
+            db_engine=test_db_engine,
             mcp_servers=[],  # No MCP servers for testing
         )
         await manager.initialize()
@@ -453,13 +617,16 @@ class TestToolApprovalEndToEnd:
         await manager.cleanup()
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(15)
     async def test_full_approval_flow_approved(self, agent_manager: AgentManager) -> None:
         """Test the full approval flow with approval."""
+        logger.info("=== Starting test_full_approval_flow_approved ===")
+
         # Configure tool approval
+        logger.info("Configuring tool approval...")
         agent_manager.configure_tool_approval(
             require_approval=True,
             auto_approve_tools=set(),  # No auto-approved tools
-            approval_timeout=5.0,
         )
 
         # Variable to store the actual tool_id
@@ -471,36 +638,106 @@ class TestToolApprovalEndToEnd:
 
         # Stream the response
         responses = []
-        async for response in agent_manager.chat_stream(message):
+        logger.info(f"Starting to stream responses for message: {message}")
+        user_message = UserMessage(content=message)
+
+        saw_tool_started = False
+        stream_count = 0
+        async for response in agent_manager.chat_stream(user_message):
+            stream_count += 1
+            content_preview = (
+                getattr(response, "content", "N/A")[:100] if hasattr(response, "content") else "N/A"
+            )
+            logger.info(
+                f"[Stream {stream_count}] Received response: type={response.type}, "
+                f"content={content_preview}, "
+                f"final={getattr(response, 'final', 'N/A')}"
+            )
             responses.append(response)
 
+            # Debug log for every message
+            logger.debug(f"[Stream {stream_count}] Full response object: {response}")
+
             # When we see the approval request, capture the tool_id and send approval
-            if response.type == ResponseType.TOOL_APPROVAL_REQUEST and not approval_sent:
-                # Verify it's requesting the list_tasks tool
-                assert "list_tasks" in response.content
-                actual_tool_id = response.metadata.get("tool_id") if response.metadata else None
+            if response.type == MessageType.APPROVAL_REQUEST and not approval_sent:
+                logger.info("Got TOOL_APPROVAL_REQUEST!")
+                # Cast to ApprovalRequestMessage to access tool fields
+                if isinstance(response, ApprovalRequestMessage):
+                    approval_request = response
+                    logger.info(f"  Tool ID: {approval_request.tool_id}")
+                    logger.info(f"  Tool Name: {approval_request.tool_name}")
+                    logger.info(f"  Tool Args: {approval_request.tool_args}")
+                    # Verify it's requesting the list_tasks tool
+                    assert approval_request.tool_name == "list_tasks"
+                    actual_tool_id = approval_request.tool_id
                 assert actual_tool_id is not None
 
                 # Send approval with the actual tool_id
-                approval = ToolApprovalResponse(
-                    tool_id=actual_tool_id,
-                    decision=ToolApprovalDecision.APPROVED,
-                    approved_by="test-user",
+                approval = ApprovalResponseMessage(
+                    tool_id=actual_tool_id, decision=ApprovalDecision.APPROVED, agent_id="METAGEN"
                 )
-                await agent_manager.handle_tool_approval_response(approval)
-                approval_sent = True
+                logger.info(f"Creating approval response: {approval}")
+                logger.info("Sending approval through chat_stream...")
 
-            # Break when we see the final response
+                # Send approval through a separate coroutine while the main loop continues
+                async def send_approval() -> None:
+                    try:
+                        logger.info("Approval sender: Starting separate stream for approval")
+                        async for response in agent_manager.chat_stream(approval):
+                            logger.info(
+                                f"Approval sender: Got response from approval stream: "
+                                f"{response.type}"
+                            )
+                        logger.info("Approval sender: Approval stream completed")
+                    except Exception as e:
+                        logger.error(f"Approval sender: Error sending approval: {e}", exc_info=True)
+
+                # Start the approval task
+                asyncio.create_task(send_approval())
+                approval_sent = True
+                logger.info("Approval task started - continuing to receive messages...")
+
+            # Check for tool execution messages after approval
+            if approval_sent:
+                logger.debug(f"Post-approval message type: {response.type}")
+                if response.type == MessageType.TOOL_STARTED:
+                    logger.info(
+                        f"✅ Tool execution started: {getattr(response, 'tool_name', 'unknown')}"
+                    )
+                elif response.type == MessageType.TOOL_RESULT:
+                    logger.info(
+                        f"✅ Tool result received: {getattr(response, 'result', 'N/A')[:100]}"
+                    )
+                elif response.type == MessageType.CHAT:
+                    if isinstance(response, AgentMessage):
+                        logger.info(f"✅ Agent response after tool: {response.content[:100]}")
+                elif response.type == MessageType.THINKING:
+                    if isinstance(response, AgentMessage):
+                        logger.info(f"✅ Agent thinking after approval: {response.content}")
+
+            # Break when we see an AgentMessage after tool execution
+            # This is the final response that includes the tool results
             if (
-                response.type == ResponseType.TEXT
-                and response.metadata
-                and response.metadata.get("final")
+                isinstance(response, AgentMessage)
+                and approval_sent
+                and saw_tool_started  # Make sure we've seen the tool execute
             ):
+                logger.info("Received final AgentMessage after tool execution, breaking loop")
+                logger.info(f"  Final content: {response.content}")
                 break
+
+            # Track if we've seen tool execution start
+            if response.type == MessageType.TOOL_STARTED:
+                saw_tool_started = True
+
+        # Log final state
+        logger.info(f"Test completed. Total responses: {len(responses)}")
+        logger.info(f"Response types received: {[r.type for r in responses]}")
+        logger.info(f"Approval sent: {approval_sent}")
 
         # Verify we got the expected response types
         response_types = [r.type for r in responses]
-        assert ResponseType.TOOL_APPROVAL_REQUEST in response_types
+        assert MessageType.APPROVAL_REQUEST in response_types
         # The approval should have been sent
         assert approval_sent
 
@@ -508,9 +745,7 @@ class TestToolApprovalEndToEnd:
     async def test_full_approval_flow_rejected(self, agent_manager: AgentManager) -> None:
         """Test the full approval flow with rejection."""
         # Configure tool approval
-        agent_manager.configure_tool_approval(
-            require_approval=True, auto_approve_tools=set(), approval_timeout=5.0
-        )
+        agent_manager.configure_tool_approval(require_approval=True, auto_approve_tools=set())
 
         # Variable to store the actual tool_id
         actual_tool_id = None
@@ -521,243 +756,39 @@ class TestToolApprovalEndToEnd:
 
         # Stream the response
         responses = []
-        async for response in agent_manager.chat_stream(message):
+        user_message = UserMessage(content=message)
+        async for response in agent_manager.chat_stream(user_message):
             responses.append(response)
+            logger.info(f"Response type: {response.type}")
 
             # When we see the approval request, send rejection
-            if response.type == ResponseType.TOOL_APPROVAL_REQUEST and not rejection_sent:
-                actual_tool_id = response.metadata.get("tool_id") if response.metadata else None
+            if isinstance(response, ApprovalRequestMessage) and not rejection_sent:
+                actual_tool_id = response.tool_id
                 assert actual_tool_id is not None
 
                 # Send rejection with the actual tool_id
-                rejection = ToolApprovalResponse(
+                rejection = ApprovalResponseMessage(
                     tool_id=actual_tool_id,
-                    decision=ToolApprovalDecision.REJECTED,
+                    decision=ApprovalDecision.REJECTED,
                     feedback="Not allowed in test environment",
-                    approved_by="test-admin",
+                    agent_id="METAGEN",
                 )
                 await agent_manager.handle_tool_approval_response(rejection)
                 rejection_sent = True
 
-            # Break when we see the final response
-            if (
-                response.type == ResponseType.TEXT
-                and response.metadata
-                and response.metadata.get("final")
-            ):
+            # Break when we see an AgentMessage after rejection
+            # After rejection, agent should respond with why tool wasn't executed
+            if isinstance(response, AgentMessage) and rejection_sent:
+                logger.info(f"Received final AgentMessage after rejection: {response.content}")
                 break
 
         # Verify we got the expected response types
         response_types = [r.type for r in responses]
-        assert ResponseType.TOOL_APPROVAL_REQUEST in response_types
+        assert MessageType.APPROVAL_REQUEST in response_types
         # The rejection should have been sent
         assert rejection_sent
-        # Tool should not have been executed
-        assert ResponseType.TOOL_CALL not in response_types
-
-    @pytest.mark.asyncio
-    async def test_auto_approved_tools_bypass_approval(self, agent_manager: AgentManager) -> None:
-        """Test that auto-approved tools bypass the approval process."""
-        # Configure tool approval
-        agent_manager.configure_tool_approval(
-            require_approval=True,
-            auto_approve_tools={"list_tasks", "read_file"},
-            approval_timeout=1.0,
-        )
-
-        # Create a mock event for tool call
-        mock_event = MagicMock()
-        mock_event.metadata = {"tool_name": "list_tasks", "tool_args": {"limit": 10}}
-        mock_event.content = "Listing tasks"
-
-        base_agent = agent_manager.meta_agent
-        assert base_agent is not None
-
-        # Process the tool call event - should not require approval
-        events = []
-        async for event in base_agent._handle_tool_call_event(
-            event=mock_event, turn_id="test-turn-123", trace_id="test-trace-123", tool_usage_map={}
-        ):
-            events.append(event)
-
-        # Auto-approved tools should not generate approval events
-        event_stages = [e["stage"] for e in events]
-        assert "tool_approval_request" not in event_stages
-        assert "tool_approved" not in event_stages
-        assert "tool_rejected" not in event_stages
-        assert "tool_call" in event_stages  # Should proceed directly to execution
-
-    @pytest.mark.asyncio
-    async def test_non_approved_tools_require_approval(self, agent_manager: AgentManager) -> None:
-        """Test that non-auto-approved tools wait for approval."""
-        # Mock the memory manager to avoid database dependencies
-        base_agent = agent_manager.meta_agent
-        assert base_agent is not None
-        base_agent.memory_manager = AsyncMock()
-        base_agent.memory_manager.record_tool_usage = AsyncMock(return_value="test-tool-id")
-        base_agent.memory_manager.update_tool_approval = AsyncMock()
-
-        # Configure tool approval
-        agent_manager.configure_tool_approval(
-            require_approval=True,
-            auto_approve_tools={"list_tasks"},  # Only this is auto-approved
-            approval_timeout=5.0,
-        )
-
-        # Create a mock event for a non-auto-approved tool
-        mock_event = MagicMock()
-        mock_event.metadata = {
-            "tool_name": "write_file",
-            "tool_args": {"path": "/tmp/test.txt", "content": "test"},
-        }
-        mock_event.content = "Writing file"
-
-        # The tricky part: _handle_tool_approval is called BEFORE the approval event is yielded
-        # So we need to pre-populate the queue with the approval
-
-        # We know the tool ID will be "test-tool-id" from our mock
-        expected_tool_id = "test-tool-id"
-
-        # Process the tool call event (non-blocking now!)
-        events = []
-        async for event in base_agent._handle_tool_call_event(
-            event=mock_event, turn_id="test-turn-123", trace_id="test-trace-123", tool_usage_map={}
-        ):
-            events.append(event)
-
-        # Should only have approval request
-        assert len(events) == 1
-        assert events[0]["stage"] == "tool_approval_request"
-
-        # Should have pending approval
-        assert expected_tool_id in base_agent._pending_approvals
-
-        # Now simulate user approval
-        approval = ToolApprovalResponse(
-            tool_id=expected_tool_id,
-            decision=ToolApprovalDecision.APPROVED,
-            approved_by="test_user",
-        )
-
-        # Process the approval response
-        approval_events = []
-        async for event in base_agent.process_approval_response(approval):
-            approval_events.append(event)
-
-        # Should have approval and tool call events
-        assert len(approval_events) == 2
-        assert approval_events[0]["stage"] == "tool_approved"
-        assert approval_events[1]["stage"] == "tool_call"
-
-        # Verify the approval was recorded
-        base_agent.memory_manager.update_tool_approval.assert_called_once_with(
-            "test-tool-id", approved=True, user_feedback=None
-        )
-
-    @pytest.mark.asyncio
-    async def test_rejected_tools_are_blocked(self, agent_manager: AgentManager) -> None:
-        """Test that rejected tools are not executed."""
-        # Mock the memory manager
-        base_agent = agent_manager.meta_agent
-        assert base_agent is not None
-        base_agent.memory_manager = AsyncMock()
-        base_agent.memory_manager.record_tool_usage = AsyncMock(return_value="test-tool-id")
-        base_agent.memory_manager.update_tool_approval = AsyncMock()
-
-        # Configure tool approval
-        agent_manager.configure_tool_approval(
-            require_approval=True,
-            auto_approve_tools=set(),  # No auto-approved tools
-            approval_timeout=2.0,
-        )
-
-        # Create a mock event for a tool that will be rejected
-        mock_event = MagicMock()
-        mock_event.metadata = {
-            "tool_name": "write_file",
-            "tool_args": {"path": "/etc/important.conf", "content": "dangerous"},
-        }
-        mock_event.content = "Writing system file"
-
-        # Process the tool call event
-        events = []
-        async for event in base_agent._handle_tool_call_event(
-            event=mock_event, turn_id="test-turn-123", trace_id="test-trace-123", tool_usage_map={}
-        ):
-            events.append(event)
-
-        # Should only have approval request
-        assert len(events) == 1
-        assert events[0]["stage"] == "tool_approval_request"
-        tool_id_to_reject = events[0]["metadata"]["tool_id"]
-
-        # Should have pending approval
-        assert tool_id_to_reject in base_agent._pending_approvals
-
-        # Now simulate user rejection
-        rejection = ToolApprovalResponse(
-            tool_id=tool_id_to_reject,
-            decision=ToolApprovalDecision.REJECTED,
-            feedback="Too dangerous for test environment",
-            approved_by="test_admin",
-        )
-
-        # Process the rejection
-        rejection_events = []
-        async for event in base_agent.process_approval_response(rejection):
-            rejection_events.append(event)
-
-        # Should have rejection event only
-        assert len(rejection_events) == 1
-        assert rejection_events[0]["stage"] == "tool_rejected"
-        assert rejection_events[0]["metadata"]["feedback"] == "Too dangerous for test environment"
-
-        # Verify the rejection was recorded
-        base_agent.memory_manager.update_tool_approval.assert_called_once_with(
-            "test-tool-id", approved=False, user_feedback="Too dangerous for test environment"
-        )
-
-    @pytest.mark.asyncio
-    async def test_approval_timeout(self, agent_manager: AgentManager) -> None:
-        """Test that approval times out correctly."""
-        # Configure with very short timeout
-        agent_manager.configure_tool_approval(
-            require_approval=True,
-            auto_approve_tools=set(),
-            approval_timeout=1.0,  # 1 second timeout
-        )
-
-        # Use explicit message
-        message = "Use the list_tasks tool"
-
-        # Stream the response
-        responses = []
-        approval_request_seen = False
-
-        async for response in agent_manager.chat_stream(message):
-            responses.append(response)
-
-            # Track when we see approval request
-            if response.type == ResponseType.TOOL_APPROVAL_REQUEST:
-                approval_request_seen = True
-                # Don't send approval - let it timeout
-
-            # Break when we see the final response
-            if (
-                response.type == ResponseType.TEXT
-                and response.metadata
-                and response.metadata.get("final")
-            ):
-                break
-
-        # Should have seen approval request
-        assert approval_request_seen
-
-        # Wait a bit for timeout to be processed
-        await asyncio.sleep(2.0)
-
-        # Check if any agent has expired approvals
-        # Note: The timeout event might not appear in the stream since it's handled separately
+        # Tool should not have been executed (no TOOL_STARTED message)
+        assert MessageType.TOOL_STARTED not in response_types
 
     @pytest.mark.asyncio
     async def test_selective_tool_approval(self, agent_manager: AgentManager) -> None:
@@ -765,72 +796,78 @@ class TestToolApprovalEndToEnd:
         # Configure with selective auto-approval
         agent_manager.configure_tool_approval(
             require_approval=True,
-            auto_approve_tools={"get_current_time"},  # Only time tool is auto-approved
-            approval_timeout=2.0,
+            auto_approve_tools={"calculator"},  # Only calculator is auto-approved
         )
 
-        # Background task to reject non-approved tools
-        rejected_tools: list[str] = []
-
-        async def reject_non_time_tools() -> None:
-            """Reject any tool that isn't get_current_time."""
-            while True:
-                await asyncio.sleep(0.1)
-                # Check if there's a pending approval
-                if agent_manager.approval_response_queue:
-                    # Peek at pending approvals (this is a hack, but better than deep mocking)
-                    # In real usage, this would come from UI/CLI
-                    # For now, just reject after seeing approval request
-                    if rejected_tools:  # We've seen an approval request
-                        rejection = ToolApprovalResponse(
-                            tool_id="test-tool-id",
-                            decision=ToolApprovalDecision.REJECTED,
-                            feedback="Only time queries allowed in test",
-                            approved_by="test",
-                        )
-                        await agent_manager.handle_tool_approval_response(rejection)
-                        break
-
-        rejection_task = asyncio.create_task(reject_non_time_tools())
-
-        # Send explicit messages to test auto-approval
-        message = "Use the list_tasks tool to show all tasks"
+        # Use a message that will trigger multiple tools
+        message = "Calculate 5 + 3, then list all tasks"
 
         # Stream the response
         responses = []
-        tools_called = []
-        tools_rejected = []
+        approval_requests: list[ApprovalRequestMessage] = []
+        execution_events: list[ToolStartedMessage] = []
 
-        async for response in agent_manager.chat_stream(message):
+        user_message = UserMessage(content=message)
+        async for response in agent_manager.chat_stream(user_message):
             responses.append(response)
 
-            if response.type == ResponseType.TOOL_CALL:
-                tool_name = response.metadata.get("tool_name") if response.metadata else None
-                tools_called.append(tool_name)
-            elif response.type == ResponseType.TOOL_APPROVAL_REQUEST:
-                tool_name = response.metadata.get("tool_name") if response.metadata else None
-                if tool_name:
-                    rejected_tools.append(tool_name)
-            elif response.type == ResponseType.TOOL_REJECTED:
-                tool_name = response.metadata.get("tool_name") if response.metadata else None
-                tools_rejected.append(tool_name)
+            # Track approval requests
+            if isinstance(response, ApprovalRequestMessage):
+                approval_requests.append(response)
+                # Approve the list_tasks tool when requested
+                if response.tool_name == "list_tasks":
+                    approval = ApprovalResponseMessage(
+                        tool_id=response.tool_id,
+                        decision=ApprovalDecision.APPROVED,
+                        agent_id="METAGEN",
+                    )
+                    await agent_manager.handle_tool_approval_response(approval)
 
-        # Cancel rejection task
-        rejection_task.cancel()
-        try:
-            await rejection_task
-        except asyncio.CancelledError:
-            pass
+            # Track execution events
+            elif response.type == MessageType.TOOL_STARTED:
+                assert isinstance(response, ToolStartedMessage)
+                execution_events.append(response)
 
-        # Verify behavior
-        # get_current_time should be called without approval
-        if "get_current_time" in tools_called:
-            assert "get_current_time" not in rejected_tools
+            # Break on final response (AgentMessage after tools)
+            elif isinstance(response, AgentMessage) and len(execution_events) > 0:
+                break
 
-        # Other tools should require approval
-        for tool in tools_called:
-            if tool != "get_current_time":
-                assert tool in rejected_tools or tool in tools_rejected
+        # Verify behavior:
+        # 1. Calculator should NOT have an approval request (auto-approved)
+        calculator_approval = any(
+            isinstance(req, ApprovalRequestMessage) and req.tool_name == "calculator"
+            for req in approval_requests
+        )
+        assert not calculator_approval, "Calculator should be auto-approved"
+
+        # 2. list_tasks should have an approval request
+        list_tasks_approval = any(
+            isinstance(req, ApprovalRequestMessage) and req.tool_name == "list_tasks"
+            for req in approval_requests
+        )
+        assert list_tasks_approval, "list_tasks should require approval"
+
+        # 3. Log what actually happened for debugging
+        # approval_requests are all ApprovalRequestMessage objects
+        tools_requested = [req.tool_name for req in approval_requests]
+        # execution_events are all ToolStartedMessage objects
+        tools_executed = [event.tool_name for event in execution_events]
+
+        logger.info(f"Tools that required approval: {tools_requested}")
+        logger.info(f"Tools that were executed: {tools_executed}")
+
+        # The test should verify the approval mechanism works correctly:
+        # - Auto-approved tools should not appear in approval_requests
+        # - Non-auto-approved tools should appear in approval_requests
+        # - Any tool that was executed should have had proper approval
+
+        # If any tools were executed, verify the approval logic
+        if tools_executed:
+            for tool_name in tools_executed:
+                if tool_name in {"calculator"}:  # Auto-approved tools
+                    assert tool_name not in tools_requested, f"{tool_name} should be auto-approved"
+                else:  # Non-auto-approved tools
+                    assert tool_name in tools_requested, f"{tool_name} should require approval"
 
     @pytest.mark.asyncio
     async def test_tool_usage_recording_with_approval(
@@ -838,9 +875,7 @@ class TestToolApprovalEndToEnd:
     ) -> None:
         """Test that tool usage is properly recorded with approval status."""
         # Configure approval
-        agent_manager.configure_tool_approval(
-            require_approval=True, auto_approve_tools=set(), approval_timeout=5.0
-        )
+        agent_manager.configure_tool_approval(require_approval=True, auto_approve_tools=set())
 
         # Inject memory manager
         agent_manager.memory_manager = memory_manager
@@ -853,25 +888,22 @@ class TestToolApprovalEndToEnd:
         message = "Use the list_tasks tool"
 
         # Run the command
-        async for response in agent_manager.chat_stream(message):
+        user_message = UserMessage(content=message)
+        async for response in agent_manager.chat_stream(user_message):
             # When we see approval request, send approval
-            if response.type == ResponseType.TOOL_APPROVAL_REQUEST and not approval_sent:
-                actual_tool_id = response.metadata.get("tool_id") if response.metadata else None
+            if isinstance(response, ApprovalRequestMessage) and not approval_sent:
+                actual_tool_id = response.tool_id
                 if actual_tool_id:
-                    approval = ToolApprovalResponse(
+                    approval = ApprovalResponseMessage(
                         tool_id=actual_tool_id,
-                        decision=ToolApprovalDecision.APPROVED,
-                        approved_by="tester",
+                        decision=ApprovalDecision.APPROVED,
+                        agent_id="METAGEN",
                     )
                     await agent_manager.handle_tool_approval_response(approval)
                     approval_sent = True
 
-            # Break on final response
-            if (
-                response.type == ResponseType.TEXT
-                and response.metadata
-                and response.metadata.get("final")
-            ):
+            # Break on final response (AgentMessage after approval)
+            if isinstance(response, AgentMessage) and approval_sent:
                 break
 
         # Give some time for database updates
@@ -892,9 +924,7 @@ class TestToolApprovalEndToEnd:
         """Test real LLM behavior with tool approval - handle indeterminism."""
         # Configure approval with a mix of auto-approved and restricted tools
         agent_manager.configure_tool_approval(
-            require_approval=True,
-            auto_approve_tools={"list_tasks", "read_file", "search_files"},
-            approval_timeout=3.0,
+            require_approval=True, auto_approve_tools={"list_tasks", "read_file", "search_files"}
         )
 
         # Messages that should trigger different tools
@@ -924,20 +954,20 @@ class TestToolApprovalEndToEnd:
                         if tool_name == "write_file":
                             # Approve file creation
                             await agent_manager.handle_tool_approval_response(
-                                ToolApprovalResponse(
+                                ApprovalResponseMessage(
                                     tool_id=tool_id,
-                                    decision=ToolApprovalDecision.APPROVED,
-                                    approved_by="test",
+                                    decision=ApprovalDecision.APPROVED,
+                                    agent_id="METAGEN",
                                 )
                             )
                         else:
                             # Reject other non-auto-approved operations
                             await agent_manager.handle_tool_approval_response(
-                                ToolApprovalResponse(
+                                ApprovalResponseMessage(
                                     tool_id=tool_id,
-                                    decision=ToolApprovalDecision.REJECTED,
+                                    decision=ApprovalDecision.REJECTED,
                                     feedback="Not allowed in test",
-                                    approved_by="test",
+                                    agent_id="METAGEN",
                                 )
                             )
                         break
@@ -946,15 +976,26 @@ class TestToolApprovalEndToEnd:
             approval_task = asyncio.create_task(handle_approvals())
 
             # Stream the response
-            async for response in agent_manager.chat_stream(message):
+            user_message = UserMessage(content=message)
+            async for response in agent_manager.chat_stream(user_message):
                 responses.append(response)
 
-                if response.type == ResponseType.TOOL_APPROVAL_REQUEST:
-                    if response.metadata:
-                        tool_requests.append(response.metadata)
-                elif response.type == ResponseType.TOOL_CALL:
-                    if response.metadata:
-                        tool_calls.append(response.metadata.get("tool_name"))
+                if isinstance(response, ApprovalRequestMessage):
+                    tool_requests.append(
+                        {
+                            "tool_id": response.tool_id,
+                            "tool_name": response.tool_name,
+                            "tool_args": response.tool_args,
+                        }
+                    )
+                elif isinstance(response, ToolCallMessage):
+                    for tool_call in response.tool_calls:
+                        tool_calls.append(tool_call.tool_name)
+
+                # Break when we get an AgentMessage after the initial response
+                # This means the LLM has finished processing (with or without tools)
+                if isinstance(response, AgentMessage) and len(responses) > 1:
+                    break
 
             # Cancel approval task
             approval_task.cancel()
@@ -964,20 +1005,24 @@ class TestToolApprovalEndToEnd:
                 pass
 
             # Verify behavior - handle LLM choosing different tools
-            response_types = {r.type for r in responses}
+            # response_types = {r.type for r in responses}  # unused
+            has_tool_calls = any(isinstance(r, ToolCallMessage) for r in responses)
+            has_approval_requests = any(isinstance(r, ApprovalRequestMessage) for r in responses)
 
             # If LLM chose to use a tool
-            if ResponseType.TOOL_CALL in response_types:
+            if has_tool_calls:
                 tools_used = set(tool_calls)
 
                 # Check if any expected tool was called
                 if tools_used & expected_tools:
                     # If it's a restricted tool, it should have been through approval
                     if tools_used & {"write_file"}:
-                        assert ResponseType.TOOL_APPROVAL_REQUEST in response_types
+                        assert has_approval_requests, "write_file should require approval"
                     # If it's auto-approved, no approval needed
                     elif tools_used & {"list_tasks", "read_file", "search_files"}:
-                        assert ResponseType.TOOL_APPROVAL_REQUEST not in response_types
+                        assert not has_approval_requests, (
+                            "Auto-approved tools should not require approval"
+                        )
 
             # If no tools were called, that's also valid - LLM chose not to use tools
             # This handles LLM indeterminism

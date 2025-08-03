@@ -1,9 +1,8 @@
 """Client module for LLM interactions."""
 
-from .agentic_client import AgenticClient
 from .anthropic_client import AnthropicClient
-from .base_client import BaseClient, GenerationResponse, Message, Role, StreamChunk, Usage
-from .factory import LLMClientFactory, create_client, create_client_for_model
+from .base_provider_client import BaseProviderClient
+from .llm_client import LLMClient
 from .models import (
     REASONING_MODELS,
     STRUCTURED_OUTPUT_MODELS,
@@ -19,26 +18,29 @@ from .models import (
     get_structured_output_model,
 )
 from .openai_client import OpenAIClient
-from .structured_client import StructuredClient
+from .types import (
+    LLMMessage,
+    LLMMessageRole,
+    LLMStreamChunk,
+    LLMStreamEvent,
+    LLMStreamEventType,
+    LLMTokenUsage,
+)
 
 __all__ = [
     # Base classes
-    "BaseClient",
-    "Message",
-    "GenerationResponse",
-    "StreamChunk",
-    "Usage",
-    "Role",
-    # Client types
-    "AgenticClient",  # For agents - LLM + tool calling
-    "StructuredClient",  # For tools - instructor-based structured outputs
-    # Direct client implementations (used by above)
+    "BaseProviderClient",
+    "LLMMessage",
+    "LLMStreamChunk",
+    "LLMStreamEvent",
+    "LLMStreamEventType",
+    "LLMTokenUsage",
+    "LLMMessageRole",
+    # Unified client
+    "LLMClient",  # Single client for all LLM interactions
+    # Direct client implementations (used by LLMClient)
     "AnthropicClient",
     "OpenAIClient",
-    # Factory functions
-    "create_client",
-    "create_client_for_model",
-    "LLMClientFactory",
     # Model registry
     "get_model",
     "get_models_by_provider",

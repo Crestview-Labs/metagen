@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { Box, Text } from 'ink';
-import { ToolApprovalRequest } from '@metagen/api-client';
+import { ApprovalRequestMessage } from '@metagen/api-client';
 
 interface ToolApprovalPromptProps {
-  approval: ToolApprovalRequest;
+  approval: ApprovalRequestMessage;
   onDecision: (approved: boolean, feedback?: string) => void;
   isResponding: boolean;
 }
@@ -46,20 +46,7 @@ export const ToolApprovalPrompt: React.FC<ToolApprovalPromptProps> = ({
         <Text>Tool: </Text>
         <Text color="magenta">{formatToolCall()}</Text>
       </Box>
-      {approval.description && (
-        <Box>
-          <Text>Description: </Text>
-          <Text color="gray">{approval.description}</Text>
-        </Box>
-      )}
-      {approval.risk_level && (
-        <Box>
-          <Text>Risk Level: </Text>
-          <Text color={approval.risk_level === 'high' ? 'red' : approval.risk_level === 'medium' ? 'yellow' : 'green'}>
-            {approval.risk_level.toUpperCase()}
-          </Text>
-        </Box>
-      )}
+      {/* ApprovalRequestMessage doesn't have description or risk_level fields */}
       
       <Box marginTop={1} flexDirection="column">
         {!showingFeedback ? (

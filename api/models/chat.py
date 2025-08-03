@@ -6,6 +6,7 @@ from typing import Any, Optional
 from pydantic import BaseModel
 
 from agents.agent_manager import UIResponse
+from common.messages import UserMessage
 
 
 class ChatRequest(BaseModel):
@@ -13,6 +14,10 @@ class ChatRequest(BaseModel):
 
     message: str
     session_id: Optional[str] = None
+
+    def to_user_message(self) -> UserMessage:
+        """Convert ChatRequest to UserMessage."""
+        return UserMessage(content=self.message)
 
 
 class UIResponseModel(BaseModel):

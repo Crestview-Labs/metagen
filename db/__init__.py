@@ -1,5 +1,5 @@
-"""Database initialization and management module."""
+"""Database engine module."""
 
-from .manager import DatabaseManager, get_db_manager
+from .engine import DatabaseEngine, get_db_engine
 
-__all__ = ["DatabaseManager", "get_db_manager"]
+__all__ = ["DatabaseEngine", "get_db_engine"]

@@ -7,7 +7,8 @@ import os
 from typing import Any, Awaitable, Callable, Optional
 
 from client.mcp_server import MCPServer
-from tools.base import BaseCoreTool, BaseLLMTool, ToolResult
+from common.types import ToolCall, ToolCallResult, ToolErrorType
+from tools.base import BaseCoreTool, BaseLLMTool
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ class ToolExecutor:
         self.mcp_servers: list[MCPServer] = []
         # Tool interceptors: tool_name -> interceptor function
         self.interceptors: dict[
-            str, Callable[[str, dict[str, Any]], Awaitable[Optional[ToolResult]]]
+            str, Callable[[str, dict[str, Any]], Awaitable[Optional[ToolCallResult]]]
         ] = {}
 
     def register_core_tool(self, tool: BaseCoreTool) -> None:
@@ -37,7 +38,7 @@ class ToolExecutor:
     def register_interceptor(
         self,
         tool_name: str,
-        interceptor: Callable[[str, dict[str, Any]], Awaitable[Optional[ToolResult]]],
+        interceptor: Callable[[str, dict[str, Any]], Awaitable[Optional[ToolCallResult]]],
     ) -> None:
         """
         Register an interceptor for a specific tool.
@@ -45,7 +46,7 @@ class ToolExecutor:
         Args:
             tool_name: Name of the tool to intercept
             interceptor: Async function that takes (tool_name, parameters) and returns:
-                        - ToolResult if the call should be intercepted and handled
+                        - ToolCallResult if the call should be intercepted and handled
                         - None if the call should proceed normally
         """
         self.interceptors[tool_name] = interceptor
@@ -57,8 +58,10 @@ class ToolExecutor:
             del self.interceptors[tool_name]
             logger.info(f"Removed interceptor for tool: {tool_name}")
 
-    async def execute(self, tool_name: str, parameters: dict[str, Any]) -> ToolResult:
+    async def execute(self, tool_call: ToolCall) -> ToolCallResult:
         """Execute a tool by name, checking interceptors first."""
+        tool_name = tool_call.name
+        tool_args = tool_call.arguments
 
         # Check if we have an interceptor for this tool
         if tool_name in self.interceptors:
@@ -67,11 +70,14 @@ class ToolExecutor:
 
             try:
                 # Call the interceptor
-                result = await interceptor(tool_name, parameters)
+                result = await interceptor(tool_name, tool_args)
 
                 # If interceptor handled the call, return its result
                 if result is not None:
                     logger.info(f"Tool call {tool_name} handled by interceptor")
+                    # Ensure tool_call_id is set
+                    if result.tool_call_id is None:
+                        result.tool_call_id = tool_call.id
                     return result
 
                 # Otherwise, proceed with normal execution
@@ -86,67 +92,81 @@ class ToolExecutor:
         # No interceptor or interceptor returned None - execute normally
         # Check if it's a core tool first
         if tool_name in self.core_tools:
-            return await self._execute_core_tool(tool_name, parameters)
+            return await self._execute_core_tool(tool_call)
 
         # Otherwise, try MCP servers
-        return await self._execute_mcp_tool(tool_name, parameters)
+        return await self._execute_mcp_tool(tool_call)
 
-    async def _execute_core_tool(self, tool_name: str, parameters: dict[str, Any]) -> ToolResult:
+    async def _execute_core_tool(self, tool_call: ToolCall) -> ToolCallResult:
         """Execute a core tool in-process."""
-        tool = self.core_tools[tool_name]
-        logger.info(f"Executing core tool: {tool_name}")
+        tool = self.core_tools[tool_call.name]
+        logger.info(f"Executing core tool: {tool_call.name}")
 
         try:
-            result = await tool.execute(parameters)
-            # Core tools already return ToolResult, just pass it through
+            result = await tool.execute(tool_call.arguments)
+            # Core tools already return ToolCallResult, ensure tool_call_id is set
+            if result.tool_call_id is None:
+                result.tool_call_id = tool_call.id
             return result
         except Exception as e:
-            logger.error(f"Core tool {tool_name} failed: {e}")
-            return ToolResult(
-                success=False,
-                llm_content=f"Tool execution failed: {str(e)}",
+            logger.error(f"Core tool {tool_call.name} failed: {e}")
+            return ToolCallResult(
+                tool_name=tool_call.name,
+                tool_call_id=tool_call.id,
+                content=f"Tool execution failed: {str(e)}",
+                is_error=True,
                 error=str(e),
+                error_type=ToolErrorType.EXECUTION_ERROR,
                 user_display=f"Error: {str(e)}",
-                metadata={"tool_name": tool_name},
+                metadata={},
             )
 
-    async def _execute_mcp_tool(self, tool_name: str, parameters: dict[str, Any]) -> ToolResult:
+    async def _execute_mcp_tool(self, tool_call: ToolCall) -> ToolCallResult:
         """Execute an MCP tool via server call."""
-        logger.info(f"Executing MCP tool: {tool_name}")
+        logger.info(f"Executing MCP tool: {tool_call.name}")
 
         # Find the server that has this tool
         for server in self.mcp_servers:
-            if server.is_running and server.has_tool(tool_name):
+            if server.is_running and server.has_tool(tool_call.name):
                 try:
-                    result = await server.call_tool(tool_name, parameters)
-                    # Convert MCP CallToolResult to our ToolResult format
+                    result = await server.call_tool(tool_call.name, tool_call.arguments)
+                    # Convert MCP CallToolCallResult to our ToolCallResult format
                     content_text = str(result.content[0].text) if result.content else ""
-                    return ToolResult(
-                        success=not result.isError,
-                        llm_content=content_text,
+                    return ToolCallResult(
+                        tool_name=tool_call.name,
+                        tool_call_id=tool_call.id,
+                        content=content_text,
+                        is_error=result.isError,
                         error=content_text if result.isError else None,
+                        error_type=ToolErrorType.EXECUTION_ERROR if result.isError else None,
                         user_display=content_text,
-                        metadata={"tool_name": tool_name, "mcp_server": True},
+                        metadata={"mcp_server": True},
                     )
                 except Exception as e:
-                    logger.error(f"MCP tool {tool_name} failed: {e}")
-                    return ToolResult(
-                        success=False,
-                        llm_content=f"MCP tool execution failed: {str(e)}",
+                    logger.error(f"MCP tool {tool_call.name} failed: {e}")
+                    return ToolCallResult(
+                        tool_name=tool_call.name,
+                        tool_call_id=tool_call.id,
+                        content=f"MCP tool execution failed: {str(e)}",
+                        is_error=True,
                         error=str(e),
+                        error_type=ToolErrorType.EXECUTION_ERROR,
                         user_display=f"Error: {str(e)}",
-                        metadata={"tool_name": tool_name},
+                        metadata={},
                     )
 
         # Tool not found
-        error_msg = f"Tool '{tool_name}' not found in any registered core tools or MCP servers"
+        error_msg = f"Tool '{tool_call.name}' not found in any registered core tools or MCP servers"
         logger.error(error_msg)
-        return ToolResult(
-            success=False,
-            llm_content=error_msg,
+        return ToolCallResult(
+            tool_name=tool_call.name,
+            tool_call_id=tool_call.id,
+            content=error_msg,
+            is_error=True,
             error=error_msg,
+            error_type=ToolErrorType.INVALID_ARGS,  # Tool not found is like invalid args
             user_display=error_msg,
-            metadata={"tool_name": tool_name, "not_found": True},
+            metadata={"not_found": True},
         )
 
 
@@ -270,7 +290,7 @@ class ToolRegistry:
                     {
                         "name": tool.name,
                         "description": tool.description,
-                        "input_schema": tool.input_schema.schema(),
+                        "input_schema": tool.input_schema.model_json_schema(),
                     }
                 )
 

@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from agents.agent_manager import AgentManager, UIResponse
-from agents.tool_approval import ToolApprovalDecision, ToolApprovalResponse
+from common.messages import ApprovalDecision, ApprovalResponseMessage, UserMessage
 
 from ..models.chat import ChatRequest, ChatResponse, UIResponseModel
 
@@ -67,13 +67,16 @@ async def chat_stream(request: Request, chat_request: ChatRequest) -> StreamingR
 
             manager = get_manager(request)
 
+            # Create structured message
+            user_message = UserMessage(content=chat_request.message)
+
             # Stream responses from agent
-            async for response in manager.chat_stream(chat_request.message):
-                # Convert UIResponse to JSON and yield
+            async for response in manager.chat_stream(user_message):
+                # Convert Message to JSON and yield
                 response_data = {
                     "type": response.type.value,
-                    "content": response.content,
-                    "metadata": response.metadata or {},
+                    "content": getattr(response, "content", ""),
+                    "metadata": getattr(response, "metadata", {}),
                     "timestamp": response.timestamp.isoformat() if response.timestamp else None,
                 }
 
@@ -131,13 +134,16 @@ async def tool_decision(request: Request, decision_data: dict[str, Any]) -> dict
                 status_code=400, detail="Missing required fields: tool_id and decision"
             )
 
-        # Create ToolApprovalResponse
+        # Create ApprovalResponseMessage
         try:
-            approval_response = ToolApprovalResponse(
+            # Extract agent_id from decision_data or default to "METAGEN"
+            agent_id = decision_data.get("agent_id", "METAGEN")
+
+            approval_response = ApprovalResponseMessage(
                 tool_id=decision_data["tool_id"],
-                decision=ToolApprovalDecision(decision_data["decision"]),
+                decision=ApprovalDecision(decision_data["decision"]),
                 feedback=decision_data.get("feedback"),
-                approved_by=decision_data.get("approved_by", "user"),
+                agent_id=agent_id,
             )
         except ValueError:
             raise HTTPException(
@@ -185,7 +191,7 @@ async def get_pending_tools(request: Request) -> dict[str, Any]:
                 "tool_id": tool.id,
                 "tool_name": tool.tool_name,
                 "tool_args": tool.tool_args,
-                "entity_id": tool.entity_id,
+                "agent_id": tool.agent_id,
                 "created_at": tool.created_at.isoformat() if tool.created_at else None,
                 "requires_approval": tool.requires_approval,
             }
