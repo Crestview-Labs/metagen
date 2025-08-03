@@ -3,23 +3,37 @@ creation."""
 
 import asyncio
 import logging
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any, AsyncIterator, Optional
 
 from agents.base import BaseAgent
+from agents.memory import MemoryManager
 from agents.meta_agent import MetaAgent
 from agents.task_execution_agent import TaskExecutionAgent
-from agents.tool_approval import ToolApprovalResponse
 from agents.tool_result_formatter import tool_result_formatter
-from client.agentic_client import AgenticClient
 from client.mcp_server import MCPServer
 from client.models import ModelID
-from memory import MemoryManager, SQLiteBackend
-from tools.base import ToolResult
-from tools.registry import configure_tool_dependencies, get_tool_executor
+from common.messages import (
+    AgentMessage,
+    ApprovalRequestMessage,
+    ApprovalResponseMessage,
+    ErrorMessage,
+    Message,
+    ThinkingMessage,
+    ToolCallMessage,
+    ToolResultMessage,
+    UserMessage,
+)
+from common.types import ToolCallResult, ToolErrorType
+from tools.base import Tool
+from tools.registry import (
+    ToolRegistry,
+    configure_tool_dependencies,
+    get_tool_executor,
+    get_tool_registry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,15 +50,8 @@ class ResponseType(Enum):
     TOOL_APPROVAL_REQUEST = "tool_approval_request"
     TOOL_APPROVED = "tool_approved"
     TOOL_REJECTED = "tool_rejected"
-
-
-@dataclass
-class AgentMessage:
-    """Message from agent to AgentManager with attribution and timing."""
-
-    agent_id: str
-    stage_event: dict
-    timestamp: float = field(default_factory=time.time)
+    TOOL_EXECUTION_STARTED = "tool_execution_started"
+    TOOL_EXECUTION_COMPLETED = "tool_execution_completed"
 
 
 @dataclass
@@ -87,7 +94,7 @@ class AgentManager:
     def __init__(
         self,
         agent_name: str = "MetaAgent",
-        db_manager: Any = None,
+        db_engine: Any = None,
         mcp_servers: Optional[list[str]] = None,
         llm: ModelID = ModelID.CLAUDE_SONNET_4,
     ) -> None:
@@ -96,14 +103,25 @@ class AgentManager:
 
         Args:
             agent_name: Name for the agent
-            db_manager: DatabaseManager instance
+            db_engine: DatabaseEngine instance
             mcp_servers: List of MCP server paths
             llm: LLM specification for MCP client
         """
         self.agent_name = agent_name
-        self.db_manager = db_manager
+        self.db_engine = db_engine
         self.mcp_servers = mcp_servers or ["tools/mcp_server.py"]
         self.llm = llm
+
+        # Tool registry - initialized once and shared
+        self.tool_registry: Optional[ToolRegistry] = None
+        self.enabled_tools: list[Tool] = []
+
+        # Global disabled tools (will come from config eventually)
+        self.global_disabled_tools = {
+            "memory_search",
+            "compact_conversation",
+            "get_recent_conversations",  # Memory tools disabled during migration
+        }
 
         # Infrastructure components
         self.memory_manager: Optional[MemoryManager] = None
@@ -132,7 +150,6 @@ class AgentManager:
         self.run_task_agent: Optional[asyncio.Task] = None
 
         self.router_task: Optional[asyncio.Task] = None
-        self.approval_timeout_task: Optional[asyncio.Task] = None
 
         # FIFO coordination for task completion
         self.pending_task_completions: list[asyncio.Event] = []
@@ -141,8 +158,6 @@ class AgentManager:
         # Tool approval configuration
         self._require_tool_approval: bool = False
         self._auto_approve_tools: set[str] = set()
-        self._approval_timeout: float = 30.0
-        self.approval_response_queue: asyncio.Queue = asyncio.Queue()
 
         # Initialization state
         self._initialized = False
@@ -155,72 +170,73 @@ class AgentManager:
             return self.task_agent
 
     def configure_tool_approval(
-        self,
-        require_approval: bool = False,
-        auto_approve_tools: Optional[set[str]] = None,
-        approval_timeout: float = 30.0,
+        self, require_approval: bool = False, auto_approve_tools: Optional[set[str]] = None
     ) -> None:
         """Configure tool approval settings for all agents.
 
         Args:
             require_approval: Whether to require approval for tool execution
             auto_approve_tools: Set of tool names that don't need approval
-            approval_timeout: Timeout in seconds for approval
         """
         self._require_tool_approval = require_approval
         self._auto_approve_tools = auto_approve_tools or set()
-        self._approval_timeout = approval_timeout
 
-        logger.info(
-            f"Tool approval configured: require={require_approval}, "
-            f"auto_approve={list(self._auto_approve_tools)}, "
-            f"timeout={approval_timeout}s"
+        logger.debug(
+            f"🔧 Tool approval configured: require={require_approval}, "
+            f"auto_approve={list(self._auto_approve_tools)}"
         )
 
         # Configure existing agents if already initialized
         if self.meta_agent:
             self.meta_agent.configure_tool_approval(
                 require_approval=require_approval,
-                auto_approve_tools=auto_approve_tools,
-                approval_timeout=approval_timeout,
-                approval_response_queue=self.approval_response_queue,
+                auto_approve_tools=list(auto_approve_tools) if auto_approve_tools else None,
+                approval_queue=self.meta_agent_input if require_approval else None,
             )
 
         if self.task_agent:
             self.task_agent.configure_tool_approval(
                 require_approval=require_approval,
-                auto_approve_tools=auto_approve_tools,
-                approval_timeout=approval_timeout,
-                approval_response_queue=self.approval_response_queue,
+                auto_approve_tools=list(auto_approve_tools) if auto_approve_tools else None,
+                approval_queue=self.task_agent_input if require_approval else None,
             )
-
-    async def _create_agentic_client(self) -> AgenticClient:
-        """Create a new agentic client instance for an agent."""
-        client = AgenticClient(llm=self.llm, mcp_servers=self.mcp_servers_instances)
-        await client.initialize()
-        return client
 
     async def _run_meta_agent(self) -> None:
         """MetaAgent runs forever, processing messages from its input queue."""
-        logger.info("Starting MetaAgent")
+        logger.debug("🤖 Starting MetaAgent")
         error_count = 0
         max_consecutive_errors = 5
 
         while True:
             try:
                 # Wait for message from AgentManager
+                logger.info("🔄 MetaAgent waiting for message from queue...")
                 message = await self.meta_agent_input.get()
-                logger.info(f"MetaAgent processing message: {message[:50]}...")
+                # Get message content for logging
+                msg_preview = (
+                    message.content[:50] if hasattr(message, "content") else str(message)[:50]
+                )
+                logger.info(
+                    f"📥 MetaAgent received message from queue: "
+                    f"{type(message).__name__} - {msg_preview}..."
+                )
 
                 # Process message and stream output back to unified queue
                 if self.meta_agent is None:
                     logger.error("MetaAgent not initialized")
                     continue
 
-                async for stage_event in self.meta_agent.stream_chat(message):
-                    await self.unified_agent_output.put(AgentMessage("METAGEN", stage_event))
+                logger.info(f"🎬 MetaAgent starting to process {type(message).__name__}")
+                event_count = 0
+                async for msg in self.meta_agent.stream_chat(message):
+                    event_count += 1
+                    self._log_message(msg, "🎯")
+                    await self.unified_agent_output.put(msg)
 
-                logger.info("MetaAgent completed processing message")
+                logger.info(
+                    f"✅ MetaAgent completed processing {type(message).__name__} "
+                    f"with {event_count} events"
+                )
                 # Reset error count on successful processing
                 error_count = 0
 
@@ -233,13 +249,9 @@ class AgentManager:
 
                 # Send error to output
                 await self.unified_agent_output.put(
-                    AgentMessage(
-                        "METAGEN",
-                        {
-                            "stage": "error",
-                            "content": f"An error occurred: {str(e)}",
-                            "metadata": {"error": str(e), "error_count": error_count},
-                        },
+                    ErrorMessage(
+                        error=f"An error occurred: {str(e)}",
+                        details={"error": str(e), "error_count": error_count},
                     )
                 )
 
@@ -273,10 +285,9 @@ class AgentManager:
                     logger.error("TaskExecutionAgent not initialized")
                     continue
 
-                async for stage_event in self.task_agent.stream_chat(task_prompt):
-                    await self.unified_agent_output.put(
-                        AgentMessage(self.task_agent.agent_id, stage_event)
-                    )
+                async for msg in self.task_agent.stream_chat(task_prompt):
+                    self._log_message(msg, "🤖")
+                    await self.unified_agent_output.put(msg)
 
                 logger.info("TaskExecutionAgent completed task execution")
 
@@ -295,13 +306,10 @@ class AgentManager:
                 logger.error(f"TaskExecutionAgent encountered an error: {e}", exc_info=True)
 
                 await self.unified_agent_output.put(
-                    AgentMessage(
-                        self.task_agent.agent_id if self.task_agent else "TASK_UNKNOWN",
-                        {
-                            "stage": "error",
-                            "content": f"Task execution error: {str(e)}",
-                            "metadata": {"error": str(e), "error_count": error_count},
-                        },
+                    ErrorMessage(
+                        agent_id=self.task_agent.agent_id if self.task_agent else "TASK_UNKNOWN",
+                        error=f"Task execution error: {str(e)}",
+                        details={"error": str(e), "error_count": error_count},
                     )
                 )
 
@@ -314,79 +322,44 @@ class AgentManager:
                     )
                     await asyncio.sleep(wait_time)
 
-    async def _check_approval_timeouts(self) -> None:
-        """Periodically check for timed-out approval requests."""
-        logger.info("Starting approval timeout checker")
-
-        while True:
-            try:
-                # Wait 5 seconds between checks
-                await asyncio.sleep(5.0)
-
-                # Check all agents for expired approvals
-                agents_to_check: list[tuple[str, BaseAgent]] = []
-                if self.meta_agent:
-                    agents_to_check.append(("METAGEN", self.meta_agent))
-                if self.task_agent:
-                    agents_to_check.append((self.task_agent.agent_id, self.task_agent))
-
-                for agent_id, agent in agents_to_check:
-                    # Get timeout events from the agent
-                    timeout_events = await agent.check_expired_approvals()
-
-                    # Send timeout events to the output queue
-                    for event in timeout_events:
-                        await self.unified_agent_output.put(AgentMessage(agent_id, event))
-
-            except asyncio.CancelledError:
-                logger.info("Approval timeout checker cancelled")
-                break
-            except Exception as e:
-                logger.error(f"Error in approval timeout checker: {e}", exc_info=True)
-                # Continue checking even if there's an error
-                await asyncio.sleep(1.0)
-
     async def _route_agent_outputs(self) -> None:
         """ONLY consumer of unified output queue with FIFO coordination."""
-        logger.info("Starting message router")
+        logger.debug("🚀 Starting message router")
         error_count = 0
         max_consecutive_errors = 10  # Higher threshold for router
+        message_count = 0
 
         while True:
             try:
                 # Wait for output from any agent
                 msg = await self.unified_agent_output.get()
+                message_count += 1
+                self._log_message(msg, "📨")
 
-                # Check for task completion using FIFO assumption
+                # Forward message directly to CLI
+                await self.cli_output_queue.put(msg)
+
+                # Check for task completion
                 if (
                     self.task_agent is not None
+                    and isinstance(msg, AgentMessage)
                     and msg.agent_id == self.task_agent.agent_id
-                    and msg.stage_event["stage"] == "response"
+                    and msg.final
                 ):
-                    logger.info(
-                        f"TaskExecutionAgent completed - FIFO queue has "
+                    logger.debug(
+                        f"🎯 TaskExecutionAgent completed - FIFO queue has "
                         f"{len(self.pending_task_completions)} pending completions"
                     )
 
                     # Signal the next pending task completion (FIFO order)
                     if self.pending_task_completions:
-                        self.pending_task_results.append(msg.stage_event["content"])
+                        self.pending_task_results.append(msg.content)
                         completion_event = self.pending_task_completions.pop(0)
                         completion_event.set()
-                        logger.info(
-                            f"Signaled completion event, "
+                        logger.debug(
+                            f"✅ Signaled completion event, "
                             f"{len(self.pending_task_completions)} remaining"
                         )
-
-                # Always forward to CLI
-                ui_response = UIResponse(
-                    type=self._map_stage_to_response_type(msg.stage_event["stage"]),
-                    content=msg.stage_event["content"],
-                    agent_id=msg.agent_id,
-                    metadata=msg.stage_event.get("metadata", {}),
-                    timestamp=datetime.fromtimestamp(msg.timestamp),
-                )
-                await self.cli_output_queue.put(ui_response)
 
                 # Reset error count on successful routing
                 error_count = 0
@@ -423,6 +396,27 @@ class AgentManager:
                     )
                     await asyncio.sleep(wait_time)
 
+    def _log_message(self, msg: Any, prefix: str = "📨") -> None:
+        """Helper to log messages in a clean way."""
+        msg_type = type(msg).__name__
+        content = getattr(msg, "content", "")[:50] if hasattr(msg, "content") else ""
+
+        # Only log important message types
+        if isinstance(
+            msg,
+            (
+                ApprovalRequestMessage,
+                ToolCallMessage,
+                ToolResultMessage,
+                ErrorMessage,
+                AgentMessage,
+            ),
+        ):
+            logger.debug(f"{prefix} [{msg_type}] {content}")
+        elif isinstance(msg, ThinkingMessage):
+            # Skip thinking messages in logs
+            pass
+
     def _map_stage_to_response_type(self, stage: str) -> ResponseType:
         """Map agent stage to UIResponse type."""
         stage_mapping = {
@@ -437,6 +431,8 @@ class AgentManager:
             "tool_approval_request": ResponseType.TOOL_APPROVAL_REQUEST,
             "tool_approved": ResponseType.TOOL_APPROVED,
             "tool_rejected": ResponseType.TOOL_REJECTED,
+            "tool_execution_started": ResponseType.TOOL_EXECUTION_STARTED,
+            "tool_execution_completed": ResponseType.TOOL_EXECUTION_COMPLETED,
         }
         return stage_mapping.get(stage, ResponseType.SYSTEM)
 
@@ -446,31 +442,50 @@ class AgentManager:
 
         try:
             # Create memory manager
-            logger.info("🔍 Creating SQLiteBackend with DatabaseManager")
-            backend = SQLiteBackend(self.db_manager)
-            self.memory_manager = MemoryManager(backend)
+            logger.info("🔍 Creating MemoryManager with DatabaseEngine")
+            self.memory_manager = MemoryManager(self.db_engine)
             await self.memory_manager.initialize()
             logger.info("Memory manager initialized")
 
             # Create MCP servers
             for server_path in self.mcp_servers:
-                server = MCPServer(server_path=server_path, db_path=str(self.db_manager.db_path))
+                server = MCPServer(server_path=server_path, db_path=str(self.db_engine.db_path))
                 await server.start()
                 self.mcp_servers_instances.append(server)
             logger.info(f"Started {len(self.mcp_servers_instances)} MCP servers")
 
             # Configure tool dependencies
-            configure_tool_dependencies(
-                {"storage": self.memory_manager.storage, "memory_manager": self.memory_manager}
+            configure_tool_dependencies({"memory_manager": self.memory_manager})
+
+            # Initialize tool registry once for all agents
+            logger.info("Discovering and registering tools...")
+            self.tool_registry = get_tool_registry()
+            await self.tool_registry.discover_and_register_tools(
+                core_tools_dir="tools/core", mcp_servers=self.mcp_servers_instances
+            )
+
+            # Get all tools and filter globally disabled ones
+            assert self.tool_registry is not None
+            all_tools = self.tool_registry.get_all_tools()
+            # Convert dict tools to Tool objects
+            self.enabled_tools = [
+                Tool.from_dict(tool)
+                for tool in all_tools
+                if tool["name"] not in self.global_disabled_tools
+            ]
+            logger.info(
+                f"Tool discovery complete: {len(self.enabled_tools)} tools enabled "
+                f"({len(self.global_disabled_tools)} globally disabled)"
             )
 
             # Create MetaAgent
-            meta_client = await self._create_agentic_client()
             self.meta_agent = MetaAgent(
                 agent_id="METAGEN",
                 instructions=None,
                 memory_manager=self.memory_manager,
-                agentic_client=meta_client,
+                llm_config={"llm": self.llm, "api_key": None},
+                mcp_servers=self.mcp_servers_instances,
+                available_tools=self.enabled_tools,
             )
             await self.meta_agent.initialize()
 
@@ -478,19 +493,18 @@ class AgentManager:
             if self._require_tool_approval:
                 self.meta_agent.configure_tool_approval(
                     require_approval=self._require_tool_approval,
-                    auto_approve_tools=self._auto_approve_tools,
-                    approval_timeout=self._approval_timeout,
-                    approval_response_queue=self.approval_response_queue,
+                    auto_approve_tools=list(self._auto_approve_tools),
+                    approval_queue=self.meta_agent_input,
                 )
 
             # Create single TaskExecutionAgent with execute_task disabled
-            task_client = await self._create_agentic_client()
-            # Disable execute_task for TaskExecutionAgent to prevent recursion
-            task_client.disabled_tools.add("execute_task")
             self.task_agent = TaskExecutionAgent(
                 agent_id="TASK_AGENT_1",
-                agentic_client=task_client,
                 memory_manager=self.memory_manager,
+                llm_config={"llm": self.llm, "api_key": None},
+                mcp_servers=self.mcp_servers_instances,
+                available_tools=self.enabled_tools,
+                disabled_tools={"execute_task"},  # Prevent recursion
             )
             await self.task_agent.initialize()
 
@@ -498,9 +512,8 @@ class AgentManager:
             if self._require_tool_approval:
                 self.task_agent.configure_tool_approval(
                     require_approval=self._require_tool_approval,
-                    auto_approve_tools=self._auto_approve_tools,
-                    approval_timeout=self._approval_timeout,
-                    approval_response_queue=self.approval_response_queue,
+                    auto_approve_tools=list(self._auto_approve_tools),
+                    approval_queue=self.task_agent_input,
                 )
 
             # Register tool interceptor
@@ -508,19 +521,19 @@ class AgentManager:
             tool_executor.register_interceptor("execute_task", self._intercept_execute_task)
 
             # Start persistent agent tasks
+            logger.debug("🚀 Starting persistent agent tasks...")
             self.run_meta_agent = asyncio.create_task(self._run_meta_agent())
+            logger.debug("✅ Started MetaAgent task")
             self.run_task_agent = asyncio.create_task(self._run_task_agent())
+            logger.debug("✅ Started TaskAgent task")
             self.router_task = asyncio.create_task(self._route_agent_outputs())
-
-            # Start approval timeout checker if approval is enabled
-            if self._require_tool_approval:
-                self.approval_timeout_task = asyncio.create_task(self._check_approval_timeouts())
+            logger.debug("✅ Started Router task")
 
             self._initialized = True
 
             # Get available tools
             tools = await self.meta_agent.get_available_tools()
-            tool_names = [tool["name"] for tool in tools]
+            tool_names = [tool.name for tool in tools]
 
             logger.info(f"Available tools ({len(tool_names)}): {', '.join(tool_names)}")
 
@@ -531,7 +544,7 @@ class AgentManager:
                 metadata={
                     "agent_name": self.agent_name,
                     "agents": ["METAGEN", "TASK_AGENT_1"],
-                    "memory_path": str(self.db_manager.db_path),
+                    "memory_path": str(self.db_engine.db_path),
                     "available_tools": tool_names,
                     "llm": self.llm,
                     "architecture": "FIFO bidirectional streaming",
@@ -547,110 +560,87 @@ class AgentManager:
                 metadata={"error_type": type(e).__name__},
             )
 
-    async def chat_stream(self, message: str) -> AsyncIterator[UIResponse]:
+    async def chat_stream(self, message: Message) -> AsyncIterator[Message]:
         """
         Simple bidirectional stream using persistent agents and unified output queue.
 
         Sends user message to MetaAgent and streams all agent outputs back to CLI.
         """
-        logger.info(f"Chat stream started with message: {message[:50]}...")
+        # Get message content for logging
+        msg_preview = message.content[:50] if hasattr(message, "content") else str(message)[:50]
+        logger.debug(f"🚀 Chat stream started with message: {msg_preview}...")
 
         if not self._initialized:
-            yield UIResponse(
-                type=ResponseType.ERROR,
-                content="Agent not initialized. Call initialize() first.",
-                agent_id="SYSTEM",
+            logger.debug("❌ Agent not initialized")
+            yield ErrorMessage(
+                error="Agent not initialized. Call initialize() first.", agent_id="SYSTEM"
             )
             return
 
         try:
             # Send message to MetaAgent input queue
+            logger.info(f"📤 Sending {type(message).__name__} to MetaAgent input queue")
+            logger.debug(f"📤 Full message: {message}")
             await self.meta_agent_input.put(message)
+            logger.info(f"✅ {type(message).__name__} sent to MetaAgent input queue")
 
             # Stream outputs from CLI output queue
             # Router task is already forwarding all agent outputs here
+            timeout_count = 0
             while True:
                 try:
-                    # Get next UI response with timeout
-                    ui_response = await asyncio.wait_for(self.cli_output_queue.get(), timeout=0.1)
-                    yield ui_response
+                    # Get next message with timeout
+                    msg = await asyncio.wait_for(self.cli_output_queue.get(), timeout=0.1)
+                    self._log_message(msg, "📥")
+                    yield msg
 
                     # Check if this is a final response from MetaAgent
-                    if ui_response.agent_id == "METAGEN" and ui_response.type == ResponseType.TEXT:
+                    if isinstance(msg, AgentMessage) and msg.agent_id == "METAGEN" and msg.final:
                         # MetaAgent completed its response
+                        logger.debug("🏁 Got final response from MetaAgent, breaking loop")
+                        break
+                    elif isinstance(msg, ErrorMessage):
+                        logger.debug("❌ Got error response, breaking loop")
                         break
 
                 except asyncio.TimeoutError:
-                    # Check if agents are still processing
-                    # In future, we could add activity tracking here
+                    timeout_count += 1
+                    if timeout_count == 50:  # Log only after 5 seconds
+                        logger.debug("⏱️ Still waiting for responses after 5 seconds...")
+                    elif timeout_count == 100:  # Log after 10 seconds
+                        logger.warning("⚠️ Still waiting for responses after 10 seconds...")
+                    elif timeout_count == 200:  # Log after 20 seconds
+                        logger.error(
+                            "❌ Still waiting for responses after 20 seconds - possible deadlock"
+                        )
                     continue
 
         except Exception as e:
             logger.error(f"Error in chat_stream: {e}", exc_info=True)
-            yield UIResponse(
-                type=ResponseType.ERROR,
-                content=f"Error: {str(e)}",
-                agent_id="SYSTEM",
-                metadata={"error_type": type(e).__name__},
-            )
+            yield ErrorMessage(error=f"Error: {str(e)}", agent_id="SYSTEM")
 
-    async def handle_tool_approval_response(self, approval_response: ToolApprovalResponse) -> None:
+    async def handle_tool_approval_response(
+        self, approval_message: ApprovalResponseMessage
+    ) -> None:
         """Handle tool approval response from UI/CLI.
 
-        Routes the approval to the correct agent and processes it asynchronously.
+        Routes the approval message to the appropriate agent.
 
         Args:
-            approval_response: The approval response from the user
+            approval_message: The approval response message from the user
         """
-        logger.info(
-            f"Handling tool approval response: tool_id={approval_response.tool_id}, "
-            f"decision={approval_response.decision}"
+        logger.debug(
+            f"🔨 Handling tool approval response: tool_id={approval_message.tool_id}, "
+            f"decision={approval_message.decision}, agent_id={approval_message.agent_id}"
         )
 
-        # Determine which agent should handle this approval
-        # For now, we'll check both agents for pending approvals
-        agents_to_check: list[tuple[str, BaseAgent]] = []
-        if self.meta_agent:
-            agents_to_check.append(("METAGEN", self.meta_agent))
-        if self.task_agent:
-            agents_to_check.append((self.task_agent.agent_id, self.task_agent))
-
-        # Find the agent with this pending approval
-        handled = False
-        for agent_id, agent in agents_to_check:
-            if approval_response.tool_id in agent._pending_approvals:
-                logger.info(f"Routing approval to agent {agent_id}")
-
-                # Process the approval and emit events
-                async for event in agent.process_approval_response(approval_response):
-                    # Send events to the unified output queue
-                    await self.unified_agent_output.put(AgentMessage(agent_id, event))
-
-                handled = True
-                break
-
-        if not handled:
-            logger.warning(
-                f"No agent found with pending approval for tool_id: {approval_response.tool_id}. "
-                f"The approval may have already timed out."
-            )
-
-            # Still send a notification event
-            await self.unified_agent_output.put(
-                AgentMessage(
-                    "SYSTEM",
-                    {
-                        "stage": "tool_approval_orphaned",
-                        "content": (
-                            f"No pending approval found for tool {approval_response.tool_id}"
-                        ),
-                        "metadata": {
-                            "tool_id": approval_response.tool_id,
-                            "decision": approval_response.decision.value,
-                        },
-                    },
-                )
-            )
+        # Route to the appropriate agent based on agent_id
+        if approval_message.agent_id == "METAGEN":
+            await self.meta_agent_input.put(approval_message)
+        elif approval_message.agent_id == self.task_agent.agent_id if self.task_agent else None:
+            await self.task_agent_input.put(approval_message)
+        else:
+            logger.warning(f"Unknown agent_id in approval response: {approval_message.agent_id}")
 
     def _parse_agent_response(self, response: str) -> list[UIResponse]:
         """
@@ -832,7 +822,7 @@ class AgentManager:
 
     async def _intercept_execute_task(
         self, tool_name: str, parameters: dict[str, Any]
-    ) -> ToolResult:
+    ) -> ToolCallResult:
         """
         Intercept execute_task calls using FIFO coordination with single TaskExecutionAgent.
 
@@ -844,7 +834,7 @@ class AgentManager:
             parameters: Tool parameters containing task_id and input_values
 
         Returns:
-            ToolResult with the actual task execution result
+            ToolCallResult with the actual task execution result
         """
         logger.info(f"Intercepting execute_task with parameters: {parameters}")
 
@@ -862,22 +852,28 @@ class AgentManager:
             input_values = parameters.get("input_values", {})
 
             if not task_id:
-                return ToolResult(
-                    success=False,
-                    llm_content="Missing required parameter: task_id",
+                return ToolCallResult(
+                    tool_name=tool_name,
+                    tool_call_id="execute_task_missing_id",
+                    content="Missing required parameter: task_id",
+                    is_error=True,
                     error="Missing task_id",
+                    error_type=ToolErrorType.INVALID_ARGS,
                     user_display="Task ID is required for execution",
-                    metadata={"tool_name": tool_name},
+                    metadata={},
                 )
 
             # Get task definition from storage
             if self.memory_manager is None:
-                return ToolResult(
-                    success=False,
-                    llm_content="Memory manager not initialized",
+                return ToolCallResult(
+                    tool_name=tool_name,
+                    tool_call_id="execute_task_no_memory",
+                    content="Memory manager not initialized",
+                    is_error=True,
                     error="System not initialized",
+                    error_type=ToolErrorType.EXECUTION_ERROR,
                     user_display="System initialization error",
-                    metadata={"tool_name": tool_name},
+                    metadata={},
                 )
 
             # Access storage backend directly as it has get_task method
@@ -885,16 +881,19 @@ class AgentManager:
             storage = self.memory_manager.storage  # type: ignore[attr-defined]
             task = await storage.get_task(task_id)  # type: ignore[attr-defined]
             if not task:
-                return ToolResult(
-                    success=False,
-                    llm_content=f"Task definition not found: {task_id}",
+                return ToolCallResult(
+                    tool_name=tool_name,
+                    tool_call_id="execute_task_not_found",
+                    content=f"Task definition not found: {task_id}",
+                    is_error=True,
                     error="Task not found",
+                    error_type=ToolErrorType.INVALID_ARGS,
                     user_display=f"Task {task_id} not found",
-                    metadata={"tool_name": tool_name},
+                    metadata={},
                 )
 
             # Create TaskExecutionRequest
-            from memory.storage.task_models import TaskExecutionRequest
+            from common.models import TaskExecutionRequest
 
             task_request = TaskExecutionRequest.create_for_task(
                 task_id=task_id, input_values=input_values
@@ -902,12 +901,15 @@ class AgentManager:
 
             # Set current task on the agent
             if self.task_agent is None:
-                return ToolResult(
-                    success=False,
-                    llm_content="Task agent not initialized",
+                return ToolCallResult(
+                    tool_name=tool_name,
+                    tool_call_id="execute_task_no_agent",
+                    content="Task agent not initialized",
+                    is_error=True,
                     error="Task agent not available",
+                    error_type=ToolErrorType.EXECUTION_ERROR,
                     user_display="Task execution agent is not available",
-                    metadata={"tool_name": tool_name},
+                    metadata={},
                 )
 
             self.task_agent.set_current_task(task_request)
@@ -929,11 +931,14 @@ class AgentManager:
 
             logger.info(f"Task execution completed with result: {final_result[:100]}...")
 
-            return ToolResult(
-                success=True,
-                llm_content=final_result,
-                user_display=f"Task completed: {final_result}",
+            return ToolCallResult(
+                tool_name=tool_name,
+                tool_call_id=task_request.id,
+                content=final_result,
+                is_error=False,
                 error=None,
+                error_type=None,
+                user_display=f"Task completed: {final_result}",
                 metadata={"task_execution": "completed", "task_id": task_id},
             )
 
@@ -944,12 +949,15 @@ class AgentManager:
             if completion_event in self.pending_task_completions:
                 self.pending_task_completions.remove(completion_event)
 
-            return ToolResult(
-                success=False,
-                llm_content=f"Task execution failed: {str(e)}",
+            return ToolCallResult(
+                tool_name=tool_name,
+                tool_call_id="execute_task_error",
+                content=f"Task execution failed: {str(e)}",
+                is_error=True,
                 error=str(e),
+                error_type=ToolErrorType.EXECUTION_ERROR,
                 user_display=f"Task execution error: {str(e)}",
-                metadata={"tool_name": tool_name},
+                metadata={},
             )
 
     async def get_system_info(self) -> UIResponse:
@@ -977,7 +985,7 @@ class AgentManager:
                 metadata={
                     "agent_info": info,
                     "model": model,
-                    "tools": [t["name"] for t in tools],
+                    "tools": [t.name for t in tools],
                     "architecture": "FIFO bidirectional streaming",
                     "agents": [
                         "METAGEN",
@@ -1003,15 +1011,15 @@ class AgentManager:
                 self.run_task_agent.cancel()
             if self.router_task and not self.router_task.done():
                 self.router_task.cancel()
-            if self.approval_timeout_task and not self.approval_timeout_task.done():
-                self.approval_timeout_task.cancel()
 
             # Cleanup agents
             if self.meta_agent:
-                await self.meta_agent.agentic_client.close()
+                if self.meta_agent.llm_client:
+                    await self.meta_agent.llm_client.close()
                 await self.meta_agent.cleanup()
             if self.task_agent:
-                await self.task_agent.agentic_client.close()
+                if self.task_agent.llm_client:
+                    await self.task_agent.llm_client.close()
                 await self.task_agent.cleanup()
 
             # Stop all MCP servers
@@ -1029,3 +1037,56 @@ class AgentManager:
             return UIResponse(
                 type=ResponseType.ERROR, content=f"Cleanup error: {str(e)}", agent_id="SYSTEM"
             )
+
+    def _log_agent_message(
+        self, context: str, message: AgentMessage, outgoing: bool = False
+    ) -> None:
+        """Log agent message details.
+
+        Args:
+            context: Context string (e.g., "MetaAgent", "Sending to MetaAgent")
+            message: The agent message
+            outgoing: Whether this is an outgoing message
+        """
+        direction = "📤" if outgoing else "📥"
+
+        if isinstance(message, UserMessage):
+            logger.debug(f"{direction} {context} received USER message: {message.content[:50]}...")
+        elif isinstance(message, ApprovalResponseMessage):
+            logger.debug(
+                f"{direction} {context} received TOOL_APPROVAL message for tool_id: "
+                f"{message.tool_id}"
+            )
+        else:
+            logger.debug(f"{direction} {context} received message type: {type(message).__name__}")
+
+    async def _route_approval_message(
+        self, approval_message: ApprovalResponseMessage, tool_id: str
+    ) -> bool:
+        """Route approval message to the appropriate agent.
+
+        Args:
+            approval_message: The approval message to route
+            tool_id: The tool ID being approved/rejected
+
+        Returns:
+            True if message was routed, False otherwise
+        """
+        # Check both agents for pending approval
+        agents_to_check: list[tuple[str, BaseAgent, asyncio.Queue]] = []
+        if self.meta_agent:
+            agents_to_check.append(("METAGEN", self.meta_agent, self.meta_agent_input))
+        if self.task_agent:
+            agents_to_check.append(
+                (self.task_agent.agent_id, self.task_agent, self.task_agent_input)
+            )
+
+        # Route approval to the agent specified in the approval message
+        for agent_id, agent, input_queue in agents_to_check:
+            if agent_id == approval_message.agent_id:
+                logger.info(f"Routing approval to agent {agent_id} via message queue")
+                await input_queue.put(approval_message)
+                return True
+
+        logger.warning(f"No agent found with ID {approval_message.agent_id} for approval")
+        return False

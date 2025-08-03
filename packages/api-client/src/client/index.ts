@@ -12,7 +12,7 @@ import {
   HealthCheck,
   ServerInfo,
   ErrorResponse,
-  ToolApprovalResponse
+  ApprovalResponseMessage
 } from '../types/index.js';
 
 export class MetagenApiClient {
@@ -168,13 +168,13 @@ export class MetagenApiClient {
   }
 
   // Tool approval endpoints
-  async sendToolDecision(decision: ToolApprovalResponse): Promise<{ success: boolean; tool_id: string; decision: string }> {
-    const response: AxiosResponse<{ success: boolean; tool_id: string; decision: string }> = await this.api.post('/api/chat/tool-decision', decision);
+  async sendToolDecision(decision: ApprovalResponseMessage): Promise<{ success: boolean; tool_id: string; decision: string }> {
+    const response: AxiosResponse<{ success: boolean; tool_id: string; decision: string }> = await this.api.post('/api/tool-decision', decision);
     return response.data;
   }
 
   async getPendingTools(): Promise<{ success: boolean; pending_tools: Array<any>; count: number }> {
-    const response: AxiosResponse<{ success: boolean; pending_tools: Array<any>; count: number }> = await this.api.get('/api/chat/pending-tools');
+    const response: AxiosResponse<{ success: boolean; pending_tools: Array<any>; count: number }> = await this.api.get('/api/pending-tools');
     return response.data;
   }
 

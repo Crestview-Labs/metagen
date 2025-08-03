@@ -1,19 +1,19 @@
-"""Test MCP server infrastructure and tool execution."""
+"""Test MCP server infrastructure and tool execution.
+
+This file tests MCP server functionality independently of any specific client.
+MCP servers can be integrated at the Agent level as needed.
+"""
 
 import asyncio
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import AsyncGenerator
 
 import pytest
 import pytest_asyncio
 
-from client.agentic_client import AgenticClient
-from client.base_client import GenerationResponse, Message, Role
+from agents.memory.memory_manager import MemoryManager
 from client.mcp_server import MCPServer
-from client.models import ModelID
-from db.manager import DatabaseManager
-from memory.storage.manager import MemoryManager
-from memory.storage.sqlite_backend import SQLiteBackend
+from db.engine import DatabaseEngine
 from tools.registry import get_tool_registry
 
 
@@ -23,21 +23,20 @@ class TestMCPInfrastructure:
     """Test MCP server and tool infrastructure."""
 
     @pytest_asyncio.fixture
-    async def test_db_manager(self, tmp_path: Path) -> AsyncGenerator[DatabaseManager, None]:
-        """Create a test database manager."""
+    async def test_db_engine(self, tmp_path: Path) -> AsyncGenerator[DatabaseEngine, None]:
+        """Create a test database engine."""
         db_path = tmp_path / "test_mcp.db"
-        manager = DatabaseManager(db_path)
-        await manager.initialize()
-        yield manager
-        await manager.close()
+        engine = DatabaseEngine(db_path)
+        await engine.initialize()
+        yield engine
+        await engine.close()
 
     @pytest_asyncio.fixture
     async def memory_manager(
-        self, test_db_manager: DatabaseManager
+        self, test_db_engine: DatabaseEngine
     ) -> AsyncGenerator[MemoryManager, None]:
         """Create memory manager with test data."""
-        backend = SQLiteBackend(test_db_manager)
-        manager = MemoryManager(backend)
+        manager = MemoryManager(test_db_engine)
         await manager.initialize()
 
         # Add test data
@@ -133,33 +132,52 @@ class TestMCPInfrastructure:
         assert len(core_tools) > 0, "Should have core tools"
         assert len(mcp_tools) > 0, "Should have MCP tools"
 
-    async def test_agentic_client_with_mcp(
-        self, mcp_server: MCPServer, memory_manager: MemoryManager, require_anthropic_key: Any
-    ) -> None:
-        """Test AgenticClient can use MCP tools."""
-        client = AgenticClient(llm=ModelID.CLAUDE_SONNET_4, mcp_servers=[mcp_server])
+    async def test_mcp_server_tool_discovery(self, mcp_server: MCPServer) -> None:
+        """Test MCP server can discover and expose tools."""
+        # Get available tools directly from MCP server
+        tools = mcp_server.get_tools()
+        assert len(tools) > 0
 
-        # Initialize with memory manager dependency
-        await client.initialize(
-            tool_dependencies={"memory_manager": memory_manager, "llm_client": client}
-        )
+        # Verify tool structure
+        for tool in tools:
+            assert "name" in tool
+            assert "description" in tool
+            assert "input_schema" in tool or "parameters" in tool
 
+        # Verify we have expected tools
+        tool_names = [tool["name"] for tool in tools]
+        gmail_tools = [name for name in tool_names if "gmail" in name]
+        drive_tools = [name for name in tool_names if "drive" in name]
+
+        assert len(gmail_tools) > 0, "Should have Gmail tools"
+        assert len(drive_tools) > 0, "Should have Drive tools"
+
+        # Log discovered tools for debugging
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.info(f"Discovered {len(tools)} MCP tools: {tool_names}")
+
+    async def test_mcp_server_tool_call(self, mcp_server: MCPServer) -> None:
+        """Test calling a tool through MCP server."""
+        # Get the session from the MCP server
+        if not mcp_server.session:
+            pytest.skip("MCP server session not available")
+
+        # Try to call a simple tool (get Gmail labels)
         try:
-            # Get available tools
-            tools = await client.get_available_tools()
-            assert len(tools) > 0
+            result = await mcp_server.session.call_tool(
+                "gmail_get_labels", {"user_id": "test_user"}
+            )
 
-            # Test a simple query
-            messages = [Message(role=Role.USER, content="What tools do you have available?")]
+            # Result should be a dict with some structure
+            assert isinstance(result, dict)
+            # May fail due to auth, but we're testing the infrastructure works
 
-            response = await client.generate(messages, max_tokens=1000)
-            # Type narrowing - generate returns GenerationResponse when stream=False
-            assert isinstance(response, GenerationResponse)
-            assert response.content
-            assert len(response.content) > 0
-
-        finally:
-            await client.close()
+        except Exception as e:
+            # Expected - we don't have real Gmail auth in tests
+            # Just verify the tool call infrastructure works
+            assert "auth" in str(e).lower() or "credentials" in str(e).lower()
 
     async def test_mcp_error_handling(self) -> None:
         """Test MCP server error handling."""

@@ -17,12 +17,11 @@ try:
 except ImportError:
     pass
 
+from agents.memory.memory_manager import MemoryManager
 from agents.meta_agent import MetaAgent
-from client.agentic_client import AgenticClient
 from client.models import ModelID
-from db.manager import DatabaseManager
-from memory.storage.manager import MemoryManager
-from memory.storage.sqlite_backend import SQLiteBackend
+from common.messages import UserMessage
+from db.engine import DatabaseEngine
 
 # Set up test logger
 logger = logging.getLogger(__name__)
@@ -44,50 +43,52 @@ class TestMetaAgentIntegration:
 
         try:
             # Initialize components
-            db_manager = DatabaseManager(db_path)
-            await db_manager.initialize()
-            storage_backend = SQLiteBackend(db_manager)
-            await storage_backend.initialize()
+            db_engine = DatabaseEngine(db_path)
+            await db_engine.initialize()
 
-            memory_manager = MemoryManager(storage_backend)
+            memory_manager = MemoryManager(db_engine)
             await memory_manager.initialize()
 
-            # Create Agentic client
-            agentic_client = AgenticClient(
-                llm=ModelID.CLAUDE_SONNET_4, api_key=os.getenv("ANTHROPIC_API_KEY")
-            )
-
-            # Create MetaAgent
+            # Create MetaAgent with LLM config
             meta_agent = MetaAgent(
-                agent_id="METAGEN", agentic_client=agentic_client, memory_manager=memory_manager
+                agent_id="METAGEN",
+                memory_manager=memory_manager,
+                llm_config={
+                    "llm": ModelID.CLAUDE_SONNET_4,
+                    "api_key": os.getenv("ANTHROPIC_API_KEY"),
+                },
+                available_tools=[],  # Will discover tools during initialization
             )
+            await meta_agent.initialize()
 
             # Test basic conversation
             responses = []
-            async for event in meta_agent.stream_chat("Hello! Can you help me test the system?"):
+            from common.messages import AgentMessage
+
+            user_message = UserMessage(content="Hello! Can you help me test the system?")
+            async for event in meta_agent.stream_chat(user_message):
                 responses.append(event)
-                logger.info(f"Agent event: {event}")
+                logger.info(f"Agent event: {type(event).__name__}")
 
             # Verify we got responses
             assert len(responses) > 0
 
-            # Check that we got a final response
-            final_responses = [r for r in responses if r.get("stage") == "response"]
-            assert len(final_responses) > 0
+            # Check that we got agent messages
+            agent_messages = [r for r in responses if isinstance(r, AgentMessage)]
+            assert len(agent_messages) > 0
 
             # Verify response has content
-            final_response = final_responses[-1]
-            assert "content" in final_response
-            assert isinstance(final_response["content"], str)
-            assert len(final_response["content"]) > 0
+            final_response = agent_messages[-1]
+            assert isinstance(final_response, AgentMessage)
+            assert isinstance(final_response.content, str)
+            assert len(final_response.content) > 0
 
             logger.info("✅ MetaAgent basic functionality test passed")
 
         finally:
             # Cleanup
             await memory_manager.close()
-            await storage_backend.close()
-            await db_manager.close()
+            await db_engine.close()
             os.unlink(str(db_path))
 
     async def test_meta_agent_memory_persistence(self) -> None:
@@ -98,28 +99,29 @@ class TestMetaAgentIntegration:
 
         try:
             # Initialize components
-            db_manager = DatabaseManager(db_path)
-            await db_manager.initialize()
-            storage_backend = SQLiteBackend(db_manager)
-            await storage_backend.initialize()
+            db_engine = DatabaseEngine(db_path)
+            await db_engine.initialize()
 
-            memory_manager = MemoryManager(storage_backend)
+            memory_manager = MemoryManager(db_engine)
             await memory_manager.initialize()
 
-            # Create Agentic client
-            agentic_client = AgenticClient(
-                llm=ModelID.CLAUDE_SONNET_4, api_key=os.getenv("ANTHROPIC_API_KEY")
-            )
-
-            # Create MetaAgent
+            # Create MetaAgent with LLM config
             meta_agent = MetaAgent(
-                agent_id="METAGEN", agentic_client=agentic_client, memory_manager=memory_manager
+                agent_id="METAGEN",
+                memory_manager=memory_manager,
+                llm_config={
+                    "llm": ModelID.CLAUDE_SONNET_4,
+                    "api_key": os.getenv("ANTHROPIC_API_KEY"),
+                },
+                available_tools=[],  # Will discover tools during initialization
             )
+            await meta_agent.initialize()
 
             # Send a message
             test_query = "My name is TestUser and I like pizza"
             responses = []
-            async for event in meta_agent.stream_chat(test_query):
+            user_message = UserMessage(content=test_query)
+            async for event in meta_agent.stream_chat(user_message):
                 responses.append(event)
 
             # Verify response
@@ -146,8 +148,7 @@ class TestMetaAgentIntegration:
         finally:
             # Cleanup
             await memory_manager.close()
-            await storage_backend.close()
-            await db_manager.close()
+            await db_engine.close()
             os.unlink(str(db_path))
 
 

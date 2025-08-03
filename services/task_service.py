@@ -3,8 +3,8 @@
 import logging
 from typing import Any, Optional
 
-from memory.storage.sqlite_backend import SQLiteBackend
-from memory.storage.task_models import Task, TaskExecutionRequest, TaskParameter
+from agents.memory import MemoryManager
+from common.models import Task, TaskExecutionRequest, TaskParameter
 from tools.core.task_tools import (
     CreateTaskInput,
     CreateTaskTool,
@@ -23,14 +23,14 @@ class TaskService:
     This service calls the same core tools that agents use, ensuring consistency.
     """
 
-    def __init__(self, storage: SQLiteBackend):
-        """Initialize task service with storage backend."""
-        self.storage = storage
+    def __init__(self, memory_manager: MemoryManager):
+        """Initialize task service with memory manager."""
+        self.memory_manager = memory_manager
 
         # Initialize tools (same ones agents use)
-        self.create_task_tool = CreateTaskTool(storage)
-        self.list_tasks_tool = ListTasksTool(storage)
-        self.execute_task_tool = ExecuteTaskTool(storage)
+        self.create_task_tool = CreateTaskTool(memory_manager)
+        self.list_tasks_tool = ListTasksTool(memory_manager)
+        self.execute_task_tool = ExecuteTaskTool(memory_manager)
 
     async def create_task(
         self,
@@ -73,7 +73,7 @@ class TaskService:
         result = CreateTaskOutput.model_validate(base_result.model_dump())
 
         # Return the created Task object
-        task = await self.storage.get_task(result.task_id)
+        task = await self.memory_manager.get_task(result.task_id)
         if task is None:
             raise ValueError(f"Failed to retrieve created task {result.task_id}")
         return task
@@ -94,7 +94,7 @@ class TaskService:
         # Convert back to Task objects
         tasks = []
         for task_dict in result.tasks:
-            task = await self.storage.get_task(task_dict["task_id"])
+            task = await self.memory_manager.get_task(task_dict["task_id"])
             if task:
                 tasks.append(task)
 
@@ -119,13 +119,13 @@ class TaskService:
         return TaskExecutionRequest(
             id=result.execution_request_id,
             task_id=task_id,
-            input_values=input_values,
-            agent_id=result.agent_id,
+            requested_by=result.agent_id,  # TODO: Fix this field name mismatch
+            execution_context={"input_values": input_values},
         )
 
     async def get_task(self, task_id: str) -> Optional[Task]:
         """Get a task definition by ID."""
-        return await self.storage.get_task(task_id)
+        return await self.memory_manager.get_task(task_id)
 
     async def preview_task_execution(
         self, task_id: str, input_values: dict[str, Any]
@@ -138,10 +138,11 @@ class TaskService:
         # Apply defaults for missing optional parameters
         validated_inputs = {}
         for param in task.input_parameters:
-            if param.name in input_values:
-                validated_inputs[param.name] = input_values[param.name]
-            elif not param.required and param.default_value is not None:
-                validated_inputs[param.name] = param.default_value
+            param_name = param.get("name", "")
+            if param_name in input_values:
+                validated_inputs[param_name] = input_values[param_name]
+            elif not param.get("required", True) and param.get("default_value") is not None:
+                validated_inputs[param_name] = param.get("default_value")
 
         return {
             "resolved_title": task.name,  # Task doesn't have resolve_title

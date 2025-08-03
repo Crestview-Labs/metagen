@@ -11,7 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from agents.agent_manager import AgentManager
-from db import get_db_manager
+from config import TOOL_APPROVAL_CONFIG
+from db import get_db_engine
 from telemetry import init_telemetry
 
 from .routes.auth import auth_router
@@ -34,22 +35,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     logger.info("🚀 Starting metagen backend server...")
 
-    # Initialize DatabaseManager first
-    db_manager = get_db_manager()
-    await db_manager.initialize()
+    # Initialize DatabaseEngine first
+    db_engine = get_db_engine()
+    await db_engine.initialize()
     logger.info("✅ Database initialized")
 
-    # Initialize OpenTelemetry with db_manager
+    # Initialize OpenTelemetry with db_engine
     try:
-        init_telemetry(service_name="metagen-api", enable_console=False, db_manager=db_manager)
+        init_telemetry(service_name="metagen-api", enable_console=False, db_engine=db_engine)
         logger.info("✅ OpenTelemetry initialized")
     except Exception as e:
         logger.warning(f"⚠️ Failed to initialize telemetry: {e}")
 
-    # Initialize AgentManager with db_manager
+    # Initialize AgentManager with db_engine
     try:
         manager = AgentManager(
-            agent_name="MetaAgent", db_manager=db_manager, mcp_servers=["tools/mcp_server.py"]
+            agent_name="MetaAgent", db_engine=db_engine, mcp_servers=["tools/mcp_server.py"]
         )
 
         response = await manager.initialize()
@@ -58,6 +59,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             raise Exception(f"Manager initialization failed: {response.content}")
 
         logger.info("✅ AgentManager initialized successfully")
+
+        # Configure tool approval from centralized config
+        if TOOL_APPROVAL_CONFIG["require_approval"]:
+            manager.configure_tool_approval(
+                require_approval=True, auto_approve_tools=TOOL_APPROVAL_CONFIG["auto_approve_tools"]
+            )
+            logger.info(
+                f"🔐 Tool approval configured: "
+                f"auto_approve={TOOL_APPROVAL_CONFIG['auto_approve_tools'][:3]}..."
+            )
 
         # Store manager reference for routes
         app.state.manager = manager
@@ -75,7 +86,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.info("✅ AgentManager cleanup complete")
 
         # Close database connections
-        await db_manager.close()
+        await db_engine.close()
         logger.info("✅ Database connections closed")
 
 
@@ -163,8 +174,8 @@ def create_app() -> FastAPI:
 
         # Check database
         try:
-            db_manager = get_db_manager()
-            db_health = await db_manager.check_health()
+            db_engine = get_db_engine()
+            db_health = await db_engine.check_health()
 
             health_status["components"]["database"] = {
                 "status": "healthy" if db_health["healthy"] else "unhealthy",

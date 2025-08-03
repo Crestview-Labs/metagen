@@ -42,11 +42,7 @@ async def get_tools(request: Request) -> ToolsResponse:
 
         # Convert to ToolInfo models
         tools = [
-            ToolInfo(
-                name=tool["name"],
-                description=tool["description"],
-                input_schema=tool["input_schema"],
-            )
+            ToolInfo(name=tool.name, description=tool.description, input_schema=tool.input_schema)
             for tool in tools_data
         ]
 
@@ -76,16 +72,16 @@ async def get_google_tools(request: Request) -> dict[str, Any]:
         google_tools = [
             tool
             for tool in tools_data
-            if any(service in tool["name"] for service in ["gmail", "drive", "calendar"])
+            if any(service in tool.name for service in ["gmail", "drive", "calendar"])
         ]
 
         result = {
             "count": len(google_tools),
-            "tools": google_tools,
+            "tools": [t.model_dump() for t in google_tools],
             "services": {
-                "gmail": [t for t in google_tools if "gmail" in t["name"]],
-                "drive": [t for t in google_tools if "drive" in t["name"]],
-                "calendar": [t for t in google_tools if "calendar" in t["name"]],
+                "gmail": [t.model_dump() for t in google_tools if "gmail" in t.name],
+                "drive": [t.model_dump() for t in google_tools if "drive" in t.name],
+                "calendar": [t.model_dump() for t in google_tools if "calendar" in t.name],
             },
         }
 

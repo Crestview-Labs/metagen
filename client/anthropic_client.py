@@ -1,29 +1,29 @@
 """Anthropic Claude client with Instructor support."""
 
-import os
 from typing import Any, AsyncIterator, Optional, Union
 
 import instructor
 from anthropic import AsyncAnthropic
 from anthropic.types import Message as AnthropicMessage
 
-from .base_client import (
-    BaseClient,
-    GenerationResponse,
-    Message,
-    Role,
-    StreamChunk,
-    StreamEvent,
-    StreamEventType,
-    Usage,
-)
+from tools.base import Tool
+
+from .base_provider_client import BaseProviderClient
 from .models import get_model
+from .types import (
+    LLMMessage,
+    LLMMessageRole,
+    LLMStreamChunk,
+    LLMStreamEvent,
+    LLMStreamEventType,
+    LLMTokenUsage,
+)
 
 
-class AnthropicClient(BaseClient):
+class AnthropicClient(BaseProviderClient):
     """Anthropic Claude client for text generation."""
 
-    def __init__(self, api_key: Optional[str] = None, default_model: Optional[str] = None):
+    def __init__(self, api_key: str, default_model: Optional[str] = None):
         """Initialize Anthropic client.
 
         Args:
@@ -35,43 +35,25 @@ class AnthropicClient(BaseClient):
         self._client: Optional[AsyncAnthropic] = None
         self._instructor_client: Optional[instructor.AsyncInstructor] = None
 
-    def _get_api_key(self) -> str:
-        """Get Anthropic API key from environment or secrets file."""
-        # Try environment first
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if api_key:
-            return api_key
-
-        # Try secrets file
-        secrets = self.load_secrets_from_file()
-        api_key = secrets.get("ANTHROPIC_API_KEY")
-        if api_key:
-            return api_key
-
-        raise ValueError(
-            "Anthropic API key not found. Set ANTHROPIC_API_KEY environment variable "
-            "or add it to .env file in project root"
-        )
-
     async def initialize(self) -> None:
         """Initialize the Anthropic client."""
         self._client = AsyncAnthropic(api_key=self.api_key)
         # Create instructor-patched client for structured outputs
         self._instructor_client = instructor.from_anthropic(self._client)
 
-    def _convert_messages_to_anthropic(self, messages: list[Message]) -> list[dict[str, Any]]:
+    def _convert_messages_to_anthropic(self, messages: list[LLMMessage]) -> list[dict[str, Any]]:
         """Convert our Message format to Anthropic's format."""
         anthropic_messages: list[dict[str, Any]] = []
 
         for msg in messages:
-            if msg.role == Role.SYSTEM:
+            if msg.role == LLMMessageRole.SYSTEM:
                 # System messages are handled separately in Anthropic
                 continue
 
-            # Handle tool result messages
-            if msg.tool_results:
+            # Handle tool result messages (TOOL role)
+            if msg.role == LLMMessageRole.TOOL and msg.tool_call_results:
                 content = []
-                for result in msg.tool_results:
+                for result in msg.tool_call_results:
                     content.append(
                         {
                             "type": "tool_result",
@@ -82,7 +64,7 @@ class AnthropicClient(BaseClient):
                     )
                 anthropic_messages.append({"role": "user", "content": content})
             # Handle assistant messages with tool calls
-            elif msg.role == Role.ASSISTANT and msg.tool_calls:
+            elif msg.role == LLMMessageRole.ASSISTANT and msg.tool_calls:
                 content = []
                 if msg.content:  # Include text content if present
                     content.append({"type": "text", "text": msg.content})
@@ -90,32 +72,32 @@ class AnthropicClient(BaseClient):
                     content.append(
                         {
                             "type": "tool_use",
-                            "id": tool_call["id"],
-                            "name": tool_call["name"],
-                            "input": tool_call["arguments"],
+                            "id": tool_call.id,
+                            "name": tool_call.name,
+                            "input": tool_call.arguments,
                         }
                     )
                 anthropic_messages.append({"role": "assistant", "content": content})
             # Regular messages
             else:
                 anthropic_msg = {
-                    "role": "user" if msg.role == Role.USER else "assistant",
+                    "role": "user" if msg.role == LLMMessageRole.USER else "assistant",
                     "content": msg.content,
                 }
                 anthropic_messages.append(anthropic_msg)
 
         return anthropic_messages
 
-    def _extract_system_message(self, messages: list[Message]) -> Optional[str]:
+    def _extract_system_message(self, messages: list[LLMMessage]) -> Optional[str]:
         """Extract system message content from messages."""
         for msg in messages:
-            if msg.role == Role.SYSTEM:
+            if msg.role == LLMMessageRole.SYSTEM:
                 return msg.content
         return None
 
     def _parse_anthropic_response(
         self, response: AnthropicMessage, model: str, has_tools: bool = False
-    ) -> GenerationResponse:
+    ) -> LLMMessage:
         """Parse Anthropic response into our format."""
         content = ""
         tool_calls = []
@@ -136,7 +118,7 @@ class AnthropicClient(BaseClient):
         # Parse usage
         usage = None
         if hasattr(response, "usage") and response.usage:
-            usage = Usage(
+            usage = LLMTokenUsage(
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
                 total_tokens=response.usage.input_tokens + response.usage.output_tokens,
@@ -144,29 +126,34 @@ class AnthropicClient(BaseClient):
 
         # Create response with tool calls if present
         response_data: dict[str, Any] = {
+            "role": LLMMessageRole.ASSISTANT,
             "content": content,
             "usage": usage,
             "model": model,
             "finish_reason": getattr(response, "stop_reason", None),
-            "raw_response": response,
         }
 
         # Add tool_calls if present
         if tool_calls:
             response_data["tool_calls"] = tool_calls
 
-        return GenerationResponse(**response_data)
+        return LLMMessage(**response_data)
+
+    def _convert_tools_to_anthropic(self, tools: list[Tool]) -> list[dict[str, Any]]:
+        """Convert Tool objects to Anthropic format."""
+        # Convert Tool objects to dicts
+        return [tool.model_dump() for tool in tools]
 
     async def generate(
         self,
-        messages: list[Message],
+        messages: list[LLMMessage],
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         stream: bool = False,
-        tools: Optional[list[dict[str, Any]]] = None,
+        tools: Optional[list[Tool]] = None,
         **kwargs: Any,
-    ) -> Union[GenerationResponse, AsyncIterator[StreamEvent]]:
+    ) -> Union[LLMMessage, AsyncIterator[LLMStreamEvent]]:
         """Generate text from Anthropic Claude."""
         if not self._client:
             await self.initialize()
@@ -202,7 +189,7 @@ class AnthropicClient(BaseClient):
 
         # Add tools if provided
         if tools:
-            request_params["tools"] = tools
+            request_params["tools"] = self._convert_tools_to_anthropic(tools)
 
         if stream:
             return self._stream_generate(request_params, model)
@@ -214,7 +201,7 @@ class AnthropicClient(BaseClient):
 
     async def _stream_generate(
         self, request_params: dict[str, Any], model: str
-    ) -> AsyncIterator[StreamEvent]:
+    ) -> AsyncIterator[LLMStreamEvent]:
         """Stream generation response from Anthropic."""
         if not self._client:
             raise RuntimeError("Anthropic client not initialized")
@@ -222,22 +209,22 @@ class AnthropicClient(BaseClient):
             async for event in stream:
                 if event.type == "content_block_delta":
                     if hasattr(event.delta, "text"):
-                        yield StreamEvent(
-                            type=StreamEventType.CONTENT,
+                        yield LLMStreamEvent(
+                            type=LLMStreamEventType.CONTENT,
                             content=event.delta.text,
-                            chunk=StreamChunk(content=event.delta.text),
+                            chunk=LLMStreamChunk(content=event.delta.text),
                         )
                 elif event.type == "message_stop":
-                    yield StreamEvent(
-                        type=StreamEventType.CONTENT,
+                    yield LLMStreamEvent(
+                        type=LLMStreamEventType.CONTENT,
                         content="",
-                        chunk=StreamChunk(finish_reason="stop"),
+                        chunk=LLMStreamChunk(content="", finish_reason="stop"),
                         metadata={"finish_reason": "stop"},
                     )
 
     async def generate_structured(
         self,
-        messages: list[Message],
+        messages: list[LLMMessage],
         response_model: type,
         model: Optional[str] = None,
         temperature: float = 0.7,
@@ -281,3 +268,8 @@ class AnthropicClient(BaseClient):
     async def close(self) -> None:
         """Close the client (Anthropic client doesn't need explicit closing)."""
         pass
+
+    @property
+    def name(self) -> str:
+        """Client name."""
+        return "Anthropic"

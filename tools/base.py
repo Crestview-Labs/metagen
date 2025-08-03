@@ -11,22 +11,40 @@ resource injection) is handled by the Meta-agent during tool execution.
 
 import json
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
+from common.types import ToolCallResult, ToolErrorType
 
-class ToolResult(BaseModel):
-    """Standardized result from tool execution."""
 
-    success: bool = Field(..., description="Whether the tool execution succeeded")
-    # TODO: Rename llm_content to simply content for consistency
-    llm_content: str = Field(..., description="Content formatted for LLM context")
-    error: Optional[str] = Field(None, description="Error message if execution failed")
-    user_display: str = Field(..., description="Human-readable display of the result")
-    metadata: dict[str, Any] = Field(
-        default_factory=dict, description="Additional metadata about the execution"
+class Tool(BaseModel):
+    """Tool schema that gets passed to LLMs.
+
+    This is the tool definition/interface that LLMs see when deciding
+    which tools to use. It's generated from the BaseTool implementation.
+    """
+
+    # Basic info
+    name: str = Field(..., description="Name of the tool")
+    description: str = Field(..., description="What the tool does")
+
+    # Parameter schema - standardized to input_schema
+    input_schema: dict[str, Any] = Field(
+        ..., description="JSON Schema describing the tool's input parameters"
     )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Tool":
+        """Create a Tool instance from a dictionary.
+
+        Useful for converting MCP tools and other dict-based tool definitions.
+        """
+        return cls(
+            name=data["name"],
+            description=data["description"],
+            input_schema=data.get("input_schema", {}),
+        )
 
 
 class BaseTool(ABC):
@@ -53,15 +71,25 @@ class BaseTool(ABC):
         """Get JSON schema for function calling."""
         pass
 
+    def get_tool_schema(self) -> Tool:
+        """Get the Tool schema for passing to LLMs.
+
+        This converts the tool's function schema into the standardized
+        Tool format that LLMs expect.
+        """
+        function_schema = self.get_function_schema()
+
+        return Tool(name=self.name, description=self.description, input_schema=function_schema)
+
     @abstractmethod
-    async def execute(self, params: dict[str, Any]) -> ToolResult:
+    async def execute(self, params: dict[str, Any]) -> ToolCallResult:
         """Execute the tool with given parameters.
 
         Args:
             params: Tool parameters matching the function schema
 
         Returns:
-            ToolResult with execution output
+            ToolCallResult with execution output
         """
         pass
 
@@ -100,9 +128,9 @@ class BaseCoreTool(BaseTool):
         # Remove title if present (not needed for function calling)
         schema.pop("title", None)
 
-        return {"name": self.name, "description": self.description, "parameters": schema}
+        return schema
 
-    async def execute(self, params: dict[str, Any]) -> ToolResult:
+    async def execute(self, params: dict[str, Any]) -> ToolCallResult:
         """Execute tool with validation and error handling."""
         try:
             # Validate and parse input
@@ -116,23 +144,29 @@ class BaseCoreTool(BaseTool):
                 output = self.output_schema.model_validate(output)
 
             # Format result
-            return ToolResult(
-                success=True,
-                llm_content=output.model_dump_json(),
+            return ToolCallResult(
+                tool_name=self.name,
+                tool_call_id=None,  # Will be set by executor
+                content=output.model_dump_json(),
+                is_error=False,
                 error=None,
+                error_type=None,
                 user_display=self._format_display(output),
-                metadata={"tool_name": self.name},
+                metadata={},
             )
 
         except Exception as e:
             # Return error as result
             error_msg = f"Error executing {self.name}: {str(e)}"
-            return ToolResult(
-                success=False,
-                llm_content=error_msg,
+            return ToolCallResult(
+                tool_name=self.name,
+                tool_call_id=None,  # Will be set by executor
+                content=error_msg,
+                is_error=True,
                 error=str(e),
+                error_type=ToolErrorType.EXECUTION_ERROR,
                 user_display=error_msg,
-                metadata={"error": True, "error_type": type(e).__name__, "tool_name": self.name},
+                metadata={"error_class": type(e).__name__},
             )
 
     @abstractmethod
@@ -186,11 +220,11 @@ class BaseLLMTool(BaseCoreTool):
         system_prompt = self._get_system_prompt()
 
         # Create messages
-        from client.base_client import Message, Role
+        from client.types import LLMMessage, LLMMessageRole
 
         messages = [
-            Message(role=Role.SYSTEM, content=system_prompt),
-            Message(role=Role.USER, content=prompt),
+            LLMMessage(role=LLMMessageRole.SYSTEM, content=system_prompt),
+            LLMMessage(role=LLMMessageRole.USER, content=prompt),
         ]
 
         # Execute with structured output

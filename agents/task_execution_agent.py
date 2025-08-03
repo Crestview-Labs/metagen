@@ -3,8 +3,18 @@
 from typing import Any, Optional
 
 from agents.base import BaseAgent
-from memory.storage.task_models import TaskExecutionRequest
-from tools.base import ToolResult
+from common.messages import (
+    AgentMessage,
+    ErrorMessage,
+    Message,
+    SystemMessage,
+    ToolCallMessage,
+    ToolErrorMessage,
+    UserMessage,
+)
+from common.models import TaskExecutionRequest
+from common.types import ToolCallResult, ToolErrorType
+from tools.base import Tool
 
 
 class TaskExecutionAgent(BaseAgent):
@@ -17,7 +27,14 @@ class TaskExecutionAgent(BaseAgent):
     """
 
     def __init__(
-        self, agent_id: str, agentic_client: Any = None, memory_manager: Any = None
+        self,
+        agent_id: str,
+        memory_manager: Any = None,
+        llm_config: Optional[dict[str, Any]] = None,
+        mcp_servers: Optional[list[Any]] = None,
+        available_tools: Optional[list[Tool]] = None,
+        disabled_tools: Optional[set[str]] = None,
+        **kwargs: Any,
     ) -> None:
         """Initialize TaskExecutionAgent with general task execution capabilities."""
         instructions = """You are a TaskExecutionAgent - THE agent responsible for executing tasks.
@@ -44,8 +61,12 @@ When you receive a TaskExecutionRequest, YOU execute it directly using your avai
         super().__init__(
             agent_id=agent_id,
             instructions=instructions,
-            agentic_client=agentic_client,
             memory_manager=memory_manager,
+            llm_config=llm_config,
+            mcp_servers=mcp_servers,
+            available_tools=available_tools,
+            disabled_tools=disabled_tools,
+            **kwargs,
         )
 
         # Current task execution state
@@ -77,8 +98,9 @@ When you receive a TaskExecutionRequest, YOU execute it directly using your avai
 **Task Parameters:**
 """
 
-        if task_request.input_values:
-            for key, value in task_request.input_values.items():
+        input_values = task_request.execution_context.get("input_values", {})
+        if input_values:
+            for key, value in input_values.items():
                 prompt += f"- {key}: {value}\n"
         else:
             prompt += "No specific parameters provided.\n"
@@ -93,32 +115,28 @@ When you receive a TaskExecutionRequest, YOU execute it directly using your avai
 
         return prompt
 
-    async def build_context(self, query: str) -> list[dict[str, Any]]:
+    async def build_context(self, query: str) -> list[Message]:
         """
         Build context for task execution.
 
         For TaskExecutionAgent, context is minimal since each task is self-contained.
         """
-        context = []
+        context: list[Message] = []
 
         # Add system message about being a task execution agent
         context.append(
-            {
-                "role": "system",
-                "content": (
+            SystemMessage(
+                content=(
                     "You are a TaskExecutionAgent. Focus on executing the current task "
                     "efficiently using available tools."
-                ),
-            }
+                )
+            )
         )
 
         # Add current task context if available
         if self.current_task_request:
             context.append(
-                {
-                    "role": "system",
-                    "content": f"Current task ID: {self.current_task_request.task_id}",
-                }
+                SystemMessage(content=f"Current task ID: {self.current_task_request.task_id}")
             )
 
         # TODO: Add relevant conversation history from memory_manager if needed
@@ -126,9 +144,9 @@ When you receive a TaskExecutionRequest, YOU execute it directly using your avai
 
         return context
 
-    async def execute_task_fully(self, task_request: TaskExecutionRequest) -> "ToolResult":
+    async def execute_task_fully(self, task_request: TaskExecutionRequest) -> ToolCallResult:
         """
-        Execute a task completely and return the final result as ToolResult.
+        Execute a task completely and return the final result as ToolCallResult.
 
         This method is used by the stream multiplexing architecture to execute
         tasks while allowing CLI to see intermediate progress via separate streams.
@@ -137,9 +155,9 @@ When you receive a TaskExecutionRequest, YOU execute it directly using your avai
             task_request: The task execution request
 
         Returns:
-            ToolResult containing the task execution result
+            ToolCallResult containing the task execution result
         """
-        from tools.base import ToolResult
+        # ToolCallResult already imported at the top
 
         # Set current task
         self.set_current_task(task_request)
@@ -151,9 +169,17 @@ When you receive a TaskExecutionRequest, YOU execute it directly using your avai
             execution_metadata: dict[str, Any] = {"tool_calls": 0, "errors": 0, "stages": []}
 
             # Stream through task execution and capture final result
-            async for stage_event in self.stream_chat(task_prompt):
-                stage = stage_event.get("stage")
-                content = stage_event.get("content", "")
+            async for message in self.stream_chat(UserMessage(content=task_prompt)):
+                # Handle different message types
+                if isinstance(message, AgentMessage):
+                    stage = "response"
+                    content = message.content
+                elif isinstance(message, ToolCallMessage):
+                    stage = "tool_call"
+                    content = ""
+                elif isinstance(message, (ToolErrorMessage, ErrorMessage)):
+                    stage = "error"
+                    content = getattr(message, "error", "")
 
                 # Track execution metadata
                 execution_metadata["stages"].append(stage)
@@ -172,10 +198,13 @@ When you receive a TaskExecutionRequest, YOU execute it directly using your avai
             success = execution_metadata["errors"] == 0 and final_response.strip()
 
             if success:
-                return ToolResult(
-                    success=True,
-                    llm_content=f"Task executed successfully. Result: {final_response}",
+                return ToolCallResult(
+                    tool_name="execute_task",
+                    tool_call_id=task_request.id,
+                    content=f"Task executed successfully. Result: {final_response}",
+                    is_error=False,
                     error=None,
+                    error_type=None,
                     user_display=f"Task '{task_request.task_id}' completed successfully",
                     metadata={
                         "task_id": task_request.task_id,
@@ -186,10 +215,13 @@ When you receive a TaskExecutionRequest, YOU execute it directly using your avai
                 )
             else:
                 self.execution_status = "failed"
-                return ToolResult(
-                    success=False,
-                    llm_content="Task execution failed or produced no result",
+                return ToolCallResult(
+                    tool_name="execute_task",
+                    tool_call_id=task_request.id,
+                    content="Task execution failed or produced no result",
+                    is_error=True,
                     error="Task execution failed",
+                    error_type=ToolErrorType.EXECUTION_ERROR,
                     user_display=f"Task '{task_request.task_id}' failed to complete",
                     metadata={
                         "task_id": task_request.task_id,
@@ -200,10 +232,13 @@ When you receive a TaskExecutionRequest, YOU execute it directly using your avai
 
         except Exception as e:
             self.execution_status = "failed"
-            return ToolResult(
-                success=False,
-                llm_content=f"Task execution error: {str(e)}",
+            return ToolCallResult(
+                tool_name="execute_task",
+                tool_call_id=task_request.id,
+                content=f"Task execution error: {str(e)}",
+                is_error=True,
                 error=str(e),
+                error_type=ToolErrorType.EXECUTION_ERROR,
                 user_display=f"Error executing task '{task_request.task_id}': {str(e)}",
                 metadata={
                     "task_id": task_request.task_id,
@@ -217,13 +252,14 @@ When you receive a TaskExecutionRequest, YOU execute it directly using your avai
         if not self.current_task_request:
             return {"status": "idle", "agent_id": self.agent_id, "current_task": None}
 
+        input_values = self.current_task_request.execution_context.get("input_values", {})
         return {
             "status": self.execution_status,
             "agent_id": self.agent_id,
             "current_task": {
                 "id": self.current_task_request.id,
                 "task_id": self.current_task_request.task_id,
-                "input_values": self.current_task_request.input_values,
-                "agent_id": self.current_task_request.agent_id,
+                "input_values": input_values,
+                "requested_by": self.current_task_request.requested_by,
             },
         }

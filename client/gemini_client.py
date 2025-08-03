@@ -1,7 +1,6 @@
 """Gemini client implementation using the new Google GenAI SDK."""
 
 import logging
-import os
 from typing import Any, AsyncIterator, Optional, Union
 
 import instructor
@@ -9,40 +8,27 @@ from google import genai
 from google.genai import types
 from google.genai.types import HttpOptions
 
-from client.base_client import BaseClient, GenerationResponse, Message, Role, StreamEvent, Usage
+from client.base_provider_client import BaseProviderClient
+from client.types import LLMMessage, LLMMessageRole, LLMStreamEvent, LLMTokenUsage
+from tools.base import Tool
 
 logger = logging.getLogger(__name__)
 
 
-class GeminiClient(BaseClient):
+class GeminiClient(BaseProviderClient):
     """Gemini client implementation supporting 2.5 Flash and Pro models."""
 
-    def __init__(self, api_key: Optional[str] = None, default_model: Optional[str] = None):
+    def __init__(self, api_key: str, default_model: Optional[str] = None):
         """Initialize Gemini client.
 
         Args:
-            api_key: Gemini API key (optional, will use GEMINI_API_KEY env var)
+            api_key: Gemini API key
             default_model: Default model to use (e.g., 'gemini-2.5-flash' or 'gemini-2.5-pro')
         """
-        super().__init__(api_key=api_key)
+        super().__init__(api_key)
         self.model_name = default_model or "gemini-2.5-flash"
         self.client: Optional[genai.Client] = None
         self._initialized = False
-
-    def _get_api_key(self) -> str:
-        """Get Gemini API key from environment or .env file."""
-        # Check environment first
-        api_key = os.environ.get("GEMINI_API_KEY")
-
-        if not api_key:
-            # Try loading from .env file
-            secrets = self.load_secrets_from_file()
-            api_key = secrets.get("GEMINI_API_KEY")
-
-        if not api_key:
-            raise ValueError("GEMINI_API_KEY not found in environment or .env file")
-
-        return api_key
 
     async def initialize(self) -> None:
         """Initialize the Gemini client."""
@@ -65,14 +51,16 @@ class GeminiClient(BaseClient):
             logger.error(f"Failed to initialize Gemini client: {e}")
             raise
 
-    def _convert_messages_to_gemini_format(self, messages: list[Message]) -> list[dict[str, Any]]:
-        """Convert our Message format to Gemini's expected format."""
+    def _convert_messages_to_gemini_format(
+        self, messages: list[LLMMessage]
+    ) -> list[dict[str, Any]]:
+        """Convert our LLMMessage format to Gemini's expected format."""
         gemini_contents = []
 
         for msg in messages:
-            if msg.tool_results:
+            if msg.role == LLMMessageRole.TOOL and msg.tool_call_results:
                 # Handle tool result messages for Gemini
-                for result in msg.tool_results:
+                for result in msg.tool_call_results:
                     # Gemini expects function responses in a specific format
                     gemini_contents.append(
                         {
@@ -90,25 +78,22 @@ class GeminiClient(BaseClient):
                             ],
                         }
                     )
-            elif msg.role == Role.ASSISTANT and msg.tool_calls:
+            elif msg.role == LLMMessageRole.ASSISTANT and msg.tool_calls:
                 # Handle assistant messages with tool calls
                 parts = []
                 if msg.content:
                     parts.append({"text": msg.content})
                 for tool_call in msg.tool_calls:
                     function_call_part: dict[str, Any] = {
-                        "functionCall": {
-                            "name": tool_call.get("name"),
-                            "args": tool_call.get("arguments", {}),
-                        }
+                        "functionCall": {"name": tool_call.name, "args": tool_call.arguments}
                     }
                     parts.append(function_call_part)
                 gemini_contents.append({"role": "model", "parts": parts})
-            elif msg.role == Role.USER:
+            elif msg.role == LLMMessageRole.USER:
                 gemini_contents.append({"role": "user", "parts": [{"text": msg.content}]})
-            elif msg.role == Role.ASSISTANT:
+            elif msg.role == LLMMessageRole.ASSISTANT:
                 gemini_contents.append({"role": "model", "parts": [{"text": msg.content}]})
-            elif msg.role == Role.SYSTEM:
+            elif msg.role == LLMMessageRole.SYSTEM:
                 # Gemini handles system instructions differently
                 # For now, prepend to first user message
                 if gemini_contents and gemini_contents[0]["role"] == "user":
@@ -122,7 +107,7 @@ class GeminiClient(BaseClient):
 
         return gemini_contents
 
-    def _convert_tools_to_gemini_format(self, tools: list[dict[str, Any]]) -> list[Any]:
+    def _convert_tools_to_gemini_format(self, tools: list[Tool]) -> list[Any]:
         """Convert tool definitions to Gemini's format.
 
         Returns a list of Tool objects containing function declarations.
@@ -132,11 +117,11 @@ class GeminiClient(BaseClient):
 
         function_declarations = []
         for tool in tools:
-            # Create FunctionDeclaration for each tool
+            # Create FunctionDeclaration for each Tool object
             func_decl = types.FunctionDeclaration(
-                name=tool["name"],
-                description=tool["description"],
-                parameters_json_schema=tool.get("input_schema", {}),
+                name=tool.name,
+                description=tool.description,
+                parameters_json_schema=tool.input_schema,
             )
             function_declarations.append(func_decl)
 
@@ -174,11 +159,11 @@ class GeminiClient(BaseClient):
 
         return tool_calls
 
-    def _calculate_usage(self, response: Any) -> Optional[Usage]:
+    def _calculate_usage(self, response: Any) -> Optional[LLMTokenUsage]:
         """Extract token usage from Gemini response."""
         if hasattr(response, "usage_metadata"):
             metadata = response.usage_metadata
-            return Usage(
+            return LLMTokenUsage(
                 input_tokens=getattr(metadata, "prompt_token_count", 0),
                 output_tokens=getattr(metadata, "candidates_token_count", 0),
                 total_tokens=getattr(metadata, "total_token_count", 0),
@@ -187,14 +172,14 @@ class GeminiClient(BaseClient):
 
     async def generate(
         self,
-        messages: list[Message],
+        messages: list[LLMMessage],
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         stream: bool = False,
-        tools: Optional[list[dict[str, Any]]] = None,
+        tools: Optional[list[Tool]] = None,
         **kwargs: Any,
-    ) -> Union[GenerationResponse, AsyncIterator[StreamEvent]]:
+    ) -> Union[LLMMessage, AsyncIterator[LLMStreamEvent]]:
         """Generate text using Gemini."""
         if not self._initialized:
             await self.initialize()
@@ -268,13 +253,13 @@ class GeminiClient(BaseClient):
                 if "UNEXPECTED_TOOL_CALL" in finish_reason:
                     logger.warning(f"Gemini returned UNEXPECTED_TOOL_CALL. Response: {response}")
 
-                return GenerationResponse(
+                return LLMMessage(
+                    role=LLMMessageRole.ASSISTANT,
                     content=content,
                     usage=usage,
                     model=model_to_use,
                     finish_reason=finish_reason,
                     tool_calls=tool_calls if tool_calls else None,
-                    raw_response=response,
                 )
 
         except Exception as e:
@@ -283,7 +268,7 @@ class GeminiClient(BaseClient):
 
     async def generate_structured(
         self,
-        messages: list[Message],
+        messages: list[LLMMessage],
         response_model: type,
         model: Optional[str] = None,
         temperature: float = 0.7,
@@ -300,11 +285,11 @@ class GeminiClient(BaseClient):
         # Convert messages to dict format for instructor
         dict_messages = []
         for msg in messages:
-            if msg.role == Role.USER:
+            if msg.role == LLMMessageRole.USER:
                 dict_messages.append({"role": "user", "content": msg.content})
-            elif msg.role == Role.ASSISTANT:
+            elif msg.role == LLMMessageRole.ASSISTANT:
                 dict_messages.append({"role": "assistant", "content": msg.content})
-            elif msg.role == Role.SYSTEM:
+            elif msg.role == LLMMessageRole.SYSTEM:
                 # Gemini handles system messages differently - prepend to first user message
                 if dict_messages and dict_messages[0]["role"] == "user":
                     dict_messages[0]["content"] = (

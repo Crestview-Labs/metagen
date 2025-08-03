@@ -3,9 +3,9 @@
 import logging
 from typing import Any, Optional
 
-from opentelemetry import trace
-
-from agents.base import AgentMessage, BaseAgent, ContextSummary
+from agents.base import BaseAgent
+from common.messages import AgentMessage, Message, UserMessage
+from tools.base import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -24,20 +24,21 @@ class MetaAgent(BaseAgent):
         agent_id: str = "METAGEN",
         instructions: Optional[str] = None,
         memory_manager: Any = None,
-        agentic_client: Any = None,
-        mcp_servers: Optional[list[str]] = None,
+        llm_config: Optional[dict[str, Any]] = None,
+        mcp_servers: Optional[list[Any]] = None,
+        available_tools: Optional[list[Tool]] = None,
+        **kwargs: Any,
     ) -> None:
-        # Initialize OpenTelemetry tracer
-        self.tracer = trace.get_tracer(__name__)
         """
         Initialize MetaAgent.
-        
+
         Args:
             agent_id: Agent identifier (defaults to "METAGEN")
             instructions: System instructions
             memory_manager: Memory manager for conversation storage
-            agentic_client: Agentic client for LLM + tool calling
-            mcp_servers: List of MCP server paths (defaults to ["tools/mcp_server.py"])
+            llm_config: Configuration for creating LLMClient
+            mcp_servers: List of MCP server instances
+            available_tools: Pre-filtered list of available tools from AgentManager
         """
         default_instructions = """You are MetaAgent, a superintelligent personal assistant with
 comprehensive tool access and task management capabilities.
@@ -123,20 +124,22 @@ task creation and direct tool usage."""
         super().__init__(
             agent_id=agent_id,
             instructions=instructions or default_instructions,
-            agentic_client=agentic_client,
             memory_manager=memory_manager,
+            llm_config=llm_config,
+            mcp_servers=mcp_servers,
+            available_tools=available_tools,
+            **kwargs,
         )
 
         self.mcp_servers = mcp_servers or ["tools/mcp_server.py"]
 
         # Current conversation state
-        self.current_conversation: list[AgentMessage] = []
-        self.active_contexts: list[ContextSummary] = []
+        self.current_conversation: list[Message] = []
 
         # Tool result display setting (default to False for cleaner output)
-        self.show_tool_results: bool = False
+        self.show_tool_results: bool = True
 
-    async def build_context(self, query: str, max_tokens: int = 10000) -> list[dict[str, Any]]:
+    async def build_context(self, query: str, max_tokens: int = 10000) -> list[Message]:
         """
         Build comprehensive context for a query by combining all memory tiers.
 
@@ -148,45 +151,32 @@ task creation and direct tool usage."""
             max_tokens: Maximum tokens for context (for future token management)
 
         Returns:
-            List of message dictionaries for LLM context
+            List of Message objects for context
         """
-        conversation = []
+        messages: list[Message] = []
 
-        # System message with instructions and tool information
-        system_content = self.instructions
-
-        if self.agentic_client:
-            tools = await self.agentic_client.get_available_tools()
-            logger.debug(f"Found {len(tools)} available tools")
-            for tool in tools:
-                logger.debug(f"Tool available: {tool['name']}")
-
-            tool_descriptions = []
-            for tool in tools:
-                tool_descriptions.append(f"- {tool['name']}: {tool['description']}")
-
-            system_content += "\\n\\nAvailable tools:\\n" + "\\n".join(tool_descriptions)
-            logger.debug(f"System content length: {len(system_content)} chars")
-
-        conversation.append({"role": "system", "content": system_content})
+        # Note: System message is handled separately by LLM client
+        # We only return UserMessage and AgentMessage objects here
 
         # 1. Recent uncompacted conversation history (always included)
         if self.memory_manager:
             try:
-                turns = await self.memory_manager.storage.get_turns_by_agent(
+                turns = await self.memory_manager.get_turns_by_agent(
                     agent_id=self.agent_id,
                     limit=10,  # TODO: Make this dynamic based on max_tokens
                 )
 
-                # Convert turns to conversation format
+                logger.debug(f"Found {len(turns)} turns for agent {self.agent_id}")
+
+                # Convert turns to Message objects
                 for turn in turns:
                     # Always add user query if non-empty
                     if turn.user_query and turn.user_query.strip():
-                        conversation.append({"role": "user", "content": turn.user_query})
+                        messages.append(UserMessage(content=turn.user_query))
 
                     # Only add assistant response if non-empty
                     if turn.agent_response and turn.agent_response.strip():
-                        conversation.append({"role": "assistant", "content": turn.agent_response})
+                        messages.append(AgentMessage(content=turn.agent_response))
             except Exception as e:
                 logger.debug(f"Error getting recent conversation: {e}")
 
@@ -232,4 +222,4 @@ task creation and direct tool usage."""
         # - Trim older/less relevant content first
         # - Ensure system message and most recent conversation always included
 
-        return conversation
+        return messages

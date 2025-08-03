@@ -1,180 +1,755 @@
-"""Base Agent - Abstract base class for all agents with context-aware memory."""
+"""Base Agent - Clean implementation following agentic-loop-refactor-plan.md"""
 
 import asyncio
+import json
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional, Union
 
-from opentelemetry import trace
-
-from agents.tool_approval import (
-    ToolApprovalDecision,
-    ToolApprovalRequest,
-    ToolApprovalResponse,
-    ToolPendingApproval,
+from agents.tool_tracker import ToolTracker, TrackedTool
+from client.llm_client import LLMClient
+from client.models import ModelID
+from common.messages import (
+    AgentMessage,
+    ApprovalDecision,
+    ApprovalRequestMessage,
+    ApprovalResponseMessage,
+    Direction,
+    ErrorMessage,
+    Message,
+    ThinkingMessage,
+    ToolCallMessage,
+    ToolCallRequest,
+    ToolErrorMessage,
+    ToolResultMessage,
+    ToolStartedMessage,
+    UsageMessage,
+    UserMessage,
 )
-from memory.storage.models import TurnStatus
+from common.models import ToolExecutionStage, TurnStatus
+from common.types import (
+    ToolCall,
+    ToolCallResult,
+    ToolErrorType,
+    ToolExecution,
+    TurnCompletionRequest,
+    TurnCreationRequest,
+)
+from tools.base import Tool
+from tools.registry import get_tool_executor
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class AgentMessage:
-    """Represents a message in agent conversation."""
-
-    role: str  # "user", "assistant", "system"
-    content: str
-    timestamp: Optional[datetime] = None
-    metadata: Optional[dict[str, Any]] = None
-
-
-@dataclass
-class AgentResponse:
-    """Response from an agent."""
-
-    content: str
-    tool_calls: Optional[list[dict[str, Any]]] = None
-    usage: Optional[dict[str, Any]] = None
-    model: Optional[str] = None
-    metadata: Optional[dict[str, Any]] = None
-
-
-@dataclass
-class ContextSummary:
-    """Represents a compacted conversation with context-ID."""
-
-    context_id: str
-    summary: str
-    key_points: list[str]
-    topics: list[str]
-    timestamp: datetime
-    message_count: int
-    relevance_score: Optional[float] = None
-
-
 class BaseAgent(ABC):
-    """
-    Abstract base class for all agents with context-aware memory.
-
-    Key principles:
-    - Raw conversations flow continuously without session boundaries
-    - Compacted conversations get context-IDs for topic-based retrieval
-    - Agent automatically discovers relevant contexts for current conversation
-    - Users can optionally specify context, but agent figures it out automatically
-    """
+    """Abstract base class for all agents with clean agentic loop implementation."""
 
     def __init__(
         self,
         agent_id: str,
         instructions: str,
-        agentic_client: Any = None,
-        memory_manager: Any = None,
+        memory_manager: Any,
+        llm_config: Optional[dict] = None,
+        mcp_servers: Optional[list] = None,
+        available_tools: Optional[list[Tool]] = None,
+        disabled_tools: Optional[set[str]] = None,
+        llm_client: Optional[LLMClient] = None,
+        model: Optional[str] = None,
+        max_iterations: int = 5,
+        show_tool_results: bool = False,
+        **kwargs: Any,
     ) -> None:
-        """
-        Initialize base agent.
+        """Initialize base agent.
 
         Args:
-            agent_id: Unique agent identifier (e.g., METAGEN, TASK_EXECUTION_123)
-            instructions: System instructions/prompt for the agent
-            agentic_client: Agentic client for LLM + tool calling
-            memory_manager: Memory manager for conversation storage
+            agent_id: Unique identifier for this agent
+            instructions: System instructions for the agent
+            memory_manager: Memory manager instance
+            llm_config: LLM configuration dict (contains 'llm' and 'api_key')
+            mcp_servers: List of MCP server instances
+            available_tools: List of available tools
+            disabled_tools: Set of tool names to disable for this agent
+            llm_client: LLM client for generation (created from llm_config if not provided)
+            model: Model to use for generation
+            max_iterations: Maximum iterations for recursive tool calling
+            show_tool_results: Whether to show tool results to user
+            **kwargs: Additional arguments
         """
         self.agent_id = agent_id
-        self.name = agent_id  # Backward compatibility
         self.instructions = instructions
-        self.agentic_client = agentic_client
         self.memory_manager = memory_manager
-        self._initialized = False
+        self.llm_config = llm_config
+        self.mcp_servers = mcp_servers or []
+        self.disabled_tools = disabled_tools or set()
 
-        # Initialize tracer for telemetry
-        self.tracer = trace.get_tracer(__name__)
+        # Filter out disabled tools from available tools
+        all_tools = available_tools or []
+        self.tools = [tool for tool in all_tools if tool.name not in self.disabled_tools]
+
+        self.llm_client = llm_client
+        self.model = model
+        self._max_iterations = max_iterations
+        self.show_tool_results = show_tool_results
 
         # Tool approval configuration
-        self._require_tool_approval: bool = False
+        self._require_tool_approval = False
         self._auto_approve_tools: set[str] = set()
-        self._approval_timeout: float = 30.0
-        self._approval_response_queue: Optional[asyncio.Queue] = None
-        self._pending_approvals: dict[str, ToolPendingApproval] = {}
+        self._approval_queue: Optional[asyncio.Queue] = None
 
-    @property
-    def is_initialized(self) -> bool:
-        """Check if agent is initialized."""
-        return self._initialized
+        # Tool tracker - created per tool batch
+        self._tool_tracker: Optional[ToolTracker] = None
 
-    def get_current_task_id(self) -> Optional[str]:
-        """Get current task ID if agent is executing a task. Override in subclasses."""
-        return None
+        # Initialization state
+        self._initialized = False
+
+        logger.info(f"Created {self.__class__.__name__} with id: {agent_id}")
 
     async def initialize(self) -> None:
-        """Initialize the agent and all its components."""
+        """Initialize the agent."""
         if self._initialized:
             return
 
-        # Standard initialization - handles SQLite concurrency requirements
-        if self.agentic_client:
-            await self.agentic_client.initialize()
-        if self.memory_manager:
-            await self.memory_manager.initialize()
+        # Create LLM client if not provided but config is available
+        if not self.llm_client and self.llm_config:
+            model_id = self.llm_config.get("llm", ModelID.CLAUDE_SONNET_4)
+            self.llm_client = LLMClient(model=model_id, api_key=self.llm_config.get("api_key"))
+
+        # Initialize LLM client
+        if self.llm_client:
+            await self.llm_client.initialize()
 
         self._initialized = True
+        logger.info(f"Initialized agent {self.agent_id}")
 
     def configure_tool_approval(
         self,
-        require_approval: bool = False,
-        auto_approve_tools: Optional[set[str]] = None,
-        approval_timeout: float = 30.0,
-        approval_response_queue: Optional[asyncio.Queue] = None,
+        require_approval: bool = True,
+        auto_approve_tools: Optional[list[str]] = None,
+        approval_queue: Optional[asyncio.Queue] = None,
     ) -> None:
-        """Configure tool approval settings for the agent.
+        """Configure tool approval settings.
 
         Args:
-            require_approval: Whether to require approval for tool execution
-            auto_approve_tools: Set of tool names that don't need approval
-            approval_timeout: Timeout in seconds for approval (default 30s)
-            approval_response_queue: Queue to receive approval responses
+            require_approval: Whether to require approval for tools
+            auto_approve_tools: List of tool names to auto-approve
+            approval_queue: Queue for receiving approval messages
+                (required if require_approval=True)
         """
         self._require_tool_approval = require_approval
-        self._auto_approve_tools = auto_approve_tools or set()
-        self._approval_timeout = approval_timeout
-        self._approval_response_queue = approval_response_queue
+        self._auto_approve_tools = set(auto_approve_tools or [])
+        self._approval_queue = approval_queue
 
-        if require_approval and not approval_response_queue:
-            raise ValueError(
-                "approval_response_queue must be provided when require_approval is True"
-            )
+        if require_approval and not approval_queue:
+            raise ValueError("approval_queue is required when require_approval=True")
 
         logger.info(
             f"Tool approval configured for {self.agent_id}: "
             f"require={require_approval}, auto_approve={list(self._auto_approve_tools)}"
         )
 
-    async def stream_chat(self, message: str, **kwargs: Any) -> AsyncIterator[dict[str, Any]]:
-        """
-        Stream a chat response using generate_stream_with_tools.
+    async def stream_chat(self, message: Message) -> AsyncIterator[Message]:
+        """Single entry point for all messages to agent.
+
+        Handles message type switching:
+        - UserMessage → generate_stream_with_tools
+        - ApprovalResponseMessage → process approval
 
         Args:
-            message: User message
-            **kwargs: Additional parameters
+            message: Any message type from the unified message system
 
         Yields:
-            Dict chunks with stage and content
+            Response messages back to the user
         """
-        # Build context for the message
-        context = await self.build_context(message)
+        if isinstance(message, UserMessage):
+            # Build context including conversation history
+            context_messages = await self.build_context(message.content)
 
-        # Add the current message
-        messages = context + [{"role": "user", "content": message}]
+            # Add the current user message to the context
+            messages = context_messages + [message]
 
-        # Stream using the common functionality
-        async for chunk in self.generate_stream_with_tools(messages, **kwargs):
-            yield chunk
+            # Stream the response
+            async for response in self.generate_stream_with_tools(messages):
+                yield response
+
+        elif isinstance(message, ApprovalResponseMessage):
+            logger.info(
+                f"🔔 BaseAgent.stream_chat received ApprovalResponseMessage "
+                f"for tool: {message.tool_id}"
+            )
+            # Process approval immediately
+            await self._process_approval_response(message)
+            # No yield - the blocked tool flow will continue and yield
+
+        else:
+            yield ErrorMessage(
+                direction=Direction.AGENT_TO_USER,
+                error=f"Unknown message type: {type(message).__name__}",
+            )
+
+    async def generate_stream_with_tools(
+        self, messages: list[Message], **kwargs: Any
+    ) -> AsyncIterator[Message]:
+        """Generate streaming response with recursive tool support.
+
+        Core loop that handles:
+        1. LLM streaming
+        2. Tool execution (inline)
+        3. Recursive tool calls
+        4. Message yielding
+        """
+        # Initialize
+        turn_id = await self._create_turn(messages)
+
+        # Yield initial thinking
+        yield ThinkingMessage(content="Processing your request...")
+
+        try:
+            # Run the main conversation loop
+            async for message in self._run_conversation_loop(turn_id, messages, **kwargs):
+                yield message
+        except Exception as e:
+            # Handle any errors that occur during processing
+            logger.error(f"Error in conversation loop: {e}", exc_info=True)
+
+            # Yield error message to user
+            yield ErrorMessage(direction=Direction.AGENT_TO_USER, error=str(e))
+
+            # Complete the turn with error status
+            await self._complete_turn_with_error(turn_id, str(e))
+            raise
+
+    async def _run_conversation_loop(
+        self, turn_id: str, messages: list[Message], **kwargs: Any
+    ) -> AsyncIterator[Message]:
+        """Run the main conversation loop with tool support."""
+        current_messages = messages.copy()
+        iteration = 0
+
+        # Track all content and tool usage for final turn update
+        all_response_content = []
+        all_tool_calls = []
+        all_tool_results = []
+
+        # For passing tool results between iterations
+        previous_tool_calls = None
+        previous_tool_results = None
+
+        # For duplicate tool call prevention
+        tool_call_history: dict[str, int] = {}  # key: "tool_name:args_hash" -> count
+
+        # Main conversation loop
+        while iteration < self._max_iterations:
+            iteration += 1
+            logger.debug(f"🔄 Agentic loop iteration {iteration}")
+
+            # Get LLM stream (previous_tool_calls/results are None on first iteration)
+            if not self.llm_client:
+                raise RuntimeError("LLM client not initialized")
+
+            llm_stream = self.llm_client.generate_stream_with_tools(
+                current_messages,
+                self.tools,
+                tool_calls=previous_tool_calls,
+                tool_results=previous_tool_results,
+                **kwargs,
+            )
+
+            # Process this iteration
+            content_buffer = ""
+            tool_requests = None
+
+            # Stream LLM response (now yields Message objects directly)
+            async for message in llm_stream:
+                if isinstance(message, AgentMessage):
+                    content_buffer += message.content
+                    yield message  # Pass through directly
+
+                elif isinstance(message, ToolCallMessage):
+                    # Store tool calls for processing
+                    tool_requests = message.tool_calls
+                    yield message  # Pass through to user
+
+                elif isinstance(message, UsageMessage):
+                    yield message  # Pass through directly
+
+            # Track content
+            if content_buffer:
+                all_response_content.append(content_buffer)
+
+            # Check if tools were requested
+            if not tool_requests and content_buffer:
+                # Got content but no tools, conversation complete
+                break
+            elif not tool_requests and not content_buffer:
+                # No content and no tools - this shouldn't happen
+                logger.error("LLM returned neither content nor tool requests")
+                yield ErrorMessage(error="Unexpected empty response from LLM")
+                break
+
+            # Handle tool flow inline
+            tool_executions = []
+            assert tool_requests is not None  # We checked above that we have tool requests
+            async for item in self._handle_tool_flow(tool_requests, turn_id, tool_call_history):
+                if isinstance(item, Message):
+                    # Yield messages as they come
+                    yield item
+                elif isinstance(item, list):
+                    # Final result - list of executions
+                    tool_executions = item
+                    break
+
+            if not tool_executions:
+                # No tools executed (timeout/error)
+                break
+
+            # Track executions for final turn update
+            for execution in tool_executions:
+                all_tool_calls.append(execution.tool_call)
+                all_tool_results.append(execution.result)
+
+            # Prepare for next iteration
+            previous_tool_calls = [ex.tool_call for ex in tool_executions]
+            previous_tool_results = [ex.result for ex in tool_executions]
+
+            logger.info(
+                f"🎯 Iteration {iteration} complete, tool results: "
+                f"{[r.content[:50] for r in previous_tool_results]}"
+            )
+
+            # Clear for next iteration
+            tool_requests = None
+
+            # Loop continues...
+
+        # Warn if hit iteration limit
+        if iteration >= self._max_iterations:
+            logger.warning(f"Hit max iterations ({self._max_iterations})")
+            yield ErrorMessage(
+                error="Maximum conversation iterations reached", details={"iterations": iteration}
+            )
+
+        # Complete turn with all data
+        await self._complete_turn(turn_id, all_response_content, all_tool_calls, all_tool_results)
+
+    async def _handle_tool_flow(
+        self, tool_requests: list[ToolCallRequest], turn_id: str, tool_call_history: dict[str, int]
+    ) -> AsyncIterator[Union[Message, list[ToolExecution]]]:
+        """Handle complete tool flow including approvals.
+
+        This generator:
+        1. Yields Messages during execution
+        2. Returns list[ToolExecution] as final yield
+
+        Flow:
+        - Create ToolTracker
+        - Add tools (determine approval needs)
+        - Handle approvals if needed
+        - Execute tools
+        - Yield results
+        """
+        # Create tracker for this tool batch
+        assert self._tool_tracker is None, "ToolTracker should be None"
+
+        self._tool_tracker = ToolTracker(memory_manager=self.memory_manager, agent_id=self.agent_id)
+
+        # Process all tool requests
+        valid_tools = 0
+        max_repeated_calls = 3  # Configurable limit
+
+        for request in tool_requests:
+            tool_id = request.tool_id
+            tool_name = request.tool_name
+            tool_args = request.tool_args
+
+            # Check for duplicate tool calls
+            tool_key = f"{tool_name}:{json.dumps(tool_args, sort_keys=True)}"
+            call_count = tool_call_history.get(tool_key, 0)
+
+            if call_count >= max_repeated_calls:
+                # Reject due to too many repeated calls
+                tracked_tool = TrackedTool(
+                    tool_id=tool_id,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    stage=ToolExecutionStage.REJECTED,
+                    agent_id=self.agent_id,
+                    turn_id=turn_id,
+                    error=f"Tool '{tool_name}' called too many times with same arguments",
+                )
+            else:
+                # Validate tool exists
+                tool = self._find_tool(tool_name)
+                if not tool:
+                    # Add as rejected
+                    tracked_tool = TrackedTool(
+                        tool_id=tool_id,
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        stage=ToolExecutionStage.REJECTED,
+                        agent_id=self.agent_id,
+                        turn_id=turn_id,
+                        error="Tool not found",
+                    )
+                else:
+                    # Update call history
+                    tool_call_history[tool_key] = call_count + 1
+
+                    # Check if needs approval
+                    needs_approval = self._tool_requires_approval(tool_name)
+                    tracked_tool = TrackedTool(
+                        tool_id=tool_id,
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        stage=(
+                            ToolExecutionStage.PENDING_APPROVAL
+                            if needs_approval
+                            else ToolExecutionStage.APPROVED
+                        ),
+                        agent_id=self.agent_id,
+                        turn_id=turn_id,
+                    )
+                    valid_tools += 1
+
+            await self._tool_tracker.add_tool(tracked_tool)
+
+        # No valid tools?
+        if valid_tools == 0:
+            self._tool_tracker = None
+            yield []  # Empty execution list
+            return
+
+        # Check for pending approvals
+        pending_tools: list[TrackedTool] = self._tool_tracker.get_tools_by_stage(
+            ToolExecutionStage.PENDING_APPROVAL
+        )
+
+        if pending_tools:
+            # Emit approval requests
+            for tool in pending_tools:  # type: ignore[assignment]
+                assert isinstance(tool, TrackedTool)  # Help mypy understand
+                yield ApprovalRequestMessage(
+                    agent_id=self.agent_id,
+                    tool_id=tool.tool_id,
+                    tool_name=tool.tool_name,
+                    tool_args=tool.tool_args,
+                )
+
+            # Wait for ALL approvals to complete
+            # ToolTracker will receive approvals one at a time via _process_approval_response
+            # It will only signal when ALL pending tools have been approved/rejected
+            approval_event = self._tool_tracker.wait_for_approvals()
+
+            logger.info(f"Waiting for {len(pending_tools)} tool approvals...")
+
+            # Must have approval queue configured
+            assert self._approval_queue is not None, (
+                "Approval queue must be configured for tool approval"
+            )
+
+            await self._wait_for_approvals_from_queue(
+                pending_tools, self._approval_queue, approval_event
+            )
+
+        # Get all tools to execute
+        approved_tools: list[TrackedTool] = self._tool_tracker.get_tools_by_stage(
+            ToolExecutionStage.APPROVED
+        )
+        rejected_tools: list[TrackedTool] = self._tool_tracker.get_tools_by_stage(
+            ToolExecutionStage.REJECTED
+        )
+
+        # Emit execution started events for approved tools
+        for tool in approved_tools:  # type: ignore[assignment]
+            assert isinstance(tool, TrackedTool)  # Help mypy understand
+            yield ToolStartedMessage(tool_id=tool.tool_id, tool_name=tool.tool_name)
+
+        # Execute all tools (approved and rejected)
+        execution_results = await self._execute_approved_tools()
+
+        # Build final execution list and yield results
+        executions = []
+
+        for result in execution_results:
+            # Find tracked tool
+            all_tools = approved_tools + rejected_tools
+            found_tool: Optional[TrackedTool] = next(
+                (t for t in all_tools if t.tool_id == result.tool_call_id), None
+            )
+
+            if not found_tool:
+                logger.error(f"No tracked tool for result: {result.tool_call_id}")
+                continue
+
+            # Create tool call
+            tool_call = ToolCall(
+                id=found_tool.tool_id, name=found_tool.tool_name, arguments=found_tool.tool_args
+            )
+
+            # Create execution record
+            executions.append(ToolExecution(tool_call=tool_call, result=result))
+
+            # Yield result message
+            assert result.tool_call_id is not None  # We always set tool_call_id
+            if result.is_error:
+                yield ToolErrorMessage(
+                    tool_id=result.tool_call_id,
+                    tool_name=result.tool_name,
+                    error=result.error or "Unknown error",
+                )
+            else:
+                # Only yield tool result if configured to show them
+                if self.show_tool_results:
+                    yield ToolResultMessage(
+                        tool_id=result.tool_call_id,
+                        tool_name=result.tool_name,
+                        result=result.content,  # Full content
+                    )
+
+        # Clean up tracker
+        self._tool_tracker = None
+
+        # Return executions as final yield
+        logger.info(f"🎯 _handle_tool_flow returning {len(executions)} executions")
+        yield executions
+
+    async def _process_approval_response(self, approval: ApprovalResponseMessage) -> None:
+        """Process tool approval response.
+
+        Updates ToolTracker with the decision.
+        ToolTracker will automatically signal when all approvals are complete.
+        """
+        logger.info(f"🎯 BaseAgent._process_approval_response called for tool: {approval.tool_id}")
+
+        if not self._tool_tracker:
+            logger.error(f"No active ToolTracker for approval: {approval.tool_id}")
+            return
+
+        # Validate the tool exists in tracker
+        tool = self._tool_tracker.get_tool(approval.tool_id)
+        if not tool:
+            logger.error(f"Unexpected approval for tool: {approval.tool_id}")
+            return
+
+        # Validate it's actually pending approval
+        if tool.stage != ToolExecutionStage.PENDING_APPROVAL:
+            logger.warning(
+                f"Tool {approval.tool_id} not pending approval, current stage: {tool.stage}"
+            )
+            return
+
+        # Update tool state
+        if approval.decision == ApprovalDecision.APPROVED.value:
+            await self._tool_tracker.update_stage(
+                approval.tool_id, ToolExecutionStage.APPROVED, user_feedback=approval.feedback
+            )
+            logger.info(f"Tool {approval.tool_id} approved")
+        else:
+            await self._tool_tracker.update_stage(
+                approval.tool_id, ToolExecutionStage.REJECTED, user_feedback=approval.feedback
+            )
+            logger.info(f"Tool {approval.tool_id} rejected: {approval.feedback}")
+
+        # ToolTracker will check if all approvals are complete
+        # and signal the waiting event if so
+
+    async def _wait_for_approvals_from_queue(
+        self,
+        pending_tools: list[TrackedTool],
+        approval_queue: asyncio.Queue,
+        approval_event: asyncio.Event,
+    ) -> None:
+        """Wait for approval messages by monitoring the input queue in a separate task.
+
+        Creates a task that pulls messages from the input queue and processes approvals,
+        while the main coroutine waits on the approval event.
+
+        Args:
+            pending_tools: List of tools waiting for approval
+            approval_queue: The agent's input queue to pull messages from
+            approval_event: Event that will be set when all approvals are complete
+        """
+        pending_count = len(pending_tools)
+        logger.info(f"Starting queue monitor for {pending_count} tool approvals...")
+
+        async def queue_monitor() -> None:
+            """Monitor the input queue for approval messages."""
+            while not approval_event.is_set():
+                try:
+                    # Use wait_for to avoid blocking forever
+                    message = await asyncio.wait_for(approval_queue.get(), timeout=0.1)
+
+                    # We should ONLY receive approval messages while waiting
+                    assert isinstance(message, ApprovalResponseMessage), (
+                        f"Expected ApprovalResponseMessage while waiting for approvals, "
+                        f"got {type(message).__name__}"
+                    )
+
+                    logger.info(f"Queue monitor received approval for tool: {message.tool_id}")
+
+                    # Process the approval
+                    await self._process_approval_response(message)
+
+                except asyncio.TimeoutError:
+                    continue
+                except AssertionError as e:
+                    logger.error(f"Protocol violation: {e}")
+                    raise
+                except Exception as e:
+                    logger.error(f"Error monitoring queue for approvals: {e}", exc_info=True)
+                    raise
+
+        # Start the queue monitor task
+        monitor_task = asyncio.create_task(queue_monitor())
+
+        try:
+            # Wait for all approvals to complete
+            await approval_event.wait()
+            logger.info("All tool approvals resolved via queue monitoring")
+        finally:
+            # Clean up the monitor task
+            monitor_task.cancel()
+            try:
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
+
+    def _find_tool(self, tool_name: str) -> Optional[Tool]:
+        """Find a tool by name."""
+        return next((t for t in self.tools if t.name == tool_name), None)
+
+    def _tool_requires_approval(self, tool_name: str) -> bool:
+        """Check if a tool requires approval."""
+        return self._require_tool_approval and tool_name not in self._auto_approve_tools
+
+    async def _execute_approved_tools(self) -> list[ToolCallResult]:
+        """Execute all approved tools."""
+        if not self._tool_tracker:
+            return []
+
+        # Get approved tools
+        approved_tools = self._tool_tracker.get_tools_by_stage(ToolExecutionStage.APPROVED)
+
+        # Execute them
+        results = []
+        for tool in approved_tools:  # type: ignore[assignment]
+            # Update stage to executing
+            await self._tool_tracker.update_stage(tool.tool_id, ToolExecutionStage.EXECUTING)
+
+            # Execute the tool
+            try:
+                executor = get_tool_executor()
+                # Create ToolCall object
+                tool_call = ToolCall(id=tool.tool_id, name=tool.tool_name, arguments=tool.tool_args)
+                result = await executor.execute(tool_call)
+
+                # Update tracker with result
+                await self._tool_tracker.update_stage(
+                    tool.tool_id, ToolExecutionStage.COMPLETED, result=result
+                )
+                results.append(result)
+
+            except Exception as e:
+                logger.error(f"Tool execution failed: {e}")
+                error_result = ToolCallResult(
+                    tool_name=tool.tool_name,
+                    tool_call_id=tool.tool_id,
+                    content=str(e),
+                    is_error=True,
+                    error=str(e),
+                    error_type=ToolErrorType.EXECUTION_ERROR,
+                    user_display=None,
+                )
+
+                await self._tool_tracker.update_stage(
+                    tool.tool_id, ToolExecutionStage.FAILED, error=str(e)
+                )
+
+                results.append(error_result)
+
+        # Also include rejected tools as error results
+        rejected_tools = self._tool_tracker.get_tools_by_stage(ToolExecutionStage.REJECTED)
+
+        for tool in rejected_tools:  # type: ignore[assignment]
+            error_result = ToolCallResult(
+                tool_name=tool.tool_name,
+                tool_call_id=tool.tool_id,
+                content=tool.error or "Tool rejected",
+                is_error=True,
+                error=tool.error or "Tool rejected",
+                error_type=ToolErrorType.USER_REJECTED
+                if tool.user_feedback
+                else ToolErrorType.INVALID_ARGS,
+                user_display=tool.user_feedback,
+            )
+            results.append(error_result)
+
+        return results
+
+    async def _create_turn(self, messages: list[Message]) -> str:
+        """Create a new conversation turn."""
+        # Extract user message
+        user_message = next(
+            (msg.content for msg in reversed(messages) if isinstance(msg, UserMessage)), ""
+        )
+
+        # Create turn request
+        request = TurnCreationRequest(
+            user_query=user_message,
+            agent_id=self.agent_id,
+            task_id=self.get_current_task_id(),
+            user_metadata={"timestamp": datetime.now().isoformat()},
+        )
+
+        # Create turn with IN_PROGRESS status
+        turn_id: str = await self.memory_manager.create_turn(request)
+        return turn_id
+
+    async def _complete_turn(
+        self,
+        turn_id: str,
+        response_content: list[str],
+        tool_calls: list[ToolCall],
+        tool_results: list[ToolCallResult],
+    ) -> None:
+        """Complete a conversation turn."""
+        # Join all response content
+        final_response = "\n".join(response_content)
+
+        # Create completion request
+        request = TurnCompletionRequest(
+            turn_id=turn_id,
+            agent_response=final_response,
+            tool_calls=tool_calls,
+            tool_results=tool_results,
+            status=TurnStatus.COMPLETED,
+        )
+
+        # Complete the turn
+        await self.memory_manager.complete_turn(request)
+
+    async def _complete_turn_with_error(self, turn_id: str, error_message: str) -> None:
+        """Complete a conversation turn with error status."""
+        # Create completion request with error
+        request = TurnCompletionRequest(
+            turn_id=turn_id,
+            agent_response="",
+            tool_calls=[],
+            tool_results=[],
+            status=TurnStatus.ERROR,
+            error_details=error_message,
+        )
+
+        # Complete the turn
+        await self.memory_manager.complete_turn(request)
+
+    def get_current_task_id(self) -> Optional[str]:
+        """Get current task ID - override in subclasses."""
+        return None
 
     @abstractmethod
-    async def build_context(self, query: str) -> list[dict[str, Any]]:
-        """
-        Build relevant context for a query.
+    async def build_context(self, query: str) -> list[Message]:
+        """Build relevant context for a query.
 
         This single method replaces all the overlapping context methods.
         It searches across conversations, compact memories, and semantic memories
@@ -184,637 +759,35 @@ class BaseAgent(ABC):
             query: The query to build context for
 
         Returns:
-            List of message dictionaries for LLM context
+            List of Message objects (UserMessage/AgentMessage) for context
         """
         pass
-
-    async def use_tool(self, tool_name: str, parameters: dict[str, Any]) -> Any:
-        """
-        Use a tool available to the agent.
-
-        This is common functionality - all agents use tools the same way.
-
-        Args:
-            tool_name: Name of the tool to use
-            parameters: Parameters for the tool
-
-        Returns:
-            Tool execution result
-        """
-        if not self.agentic_client:
-            raise ValueError("No agentic client available for tool usage")
-
-        return await self.agentic_client.call_tool(tool_name, parameters)
-
-    async def get_available_tools(self) -> list[dict[str, Any]]:
-        """
-        Get list of tools available to this agent.
-
-        Returns:
-            List of tool definitions
-        """
-        if not self.agentic_client:
-            return []
-
-        tools = await self.agentic_client.get_available_tools()
-        return tools  # type: ignore[no-any-return]
-
-    async def switch_model(self, model: str) -> bool:
-        """
-        Switch to a different LLM model.
-
-        Args:
-            model: Model identifier
-
-        Returns:
-            True if successful
-        """
-        if not self.agentic_client:
-            return False
-
-        # This would need to be implemented in agentic client
-        # For now, return False as not implemented
-        return False
-
-    async def get_current_model(self) -> str:
-        """Get the currently active model."""
-        if not self.agentic_client:
-            return "unknown"
-
-        # This would need to be implemented in agentic client
-        # For now, return unknown
-        return "unknown"
-
-    async def _handle_tool_call_event(
-        self,
-        event: Any,
-        turn_id: Optional[str],
-        trace_id: Optional[str],
-        tool_usage_map: dict[str, str],
-    ) -> AsyncIterator[dict[str, Any]]:
-        """Handle tool call events including approval flow.
-
-        Non-blocking implementation:
-        - If approval needed: yields request and stores pending state
-        - If approved/auto-approved: proceeds with execution
-
-        Args:
-            event: The tool call event from the stream
-            turn_id: Current conversation turn ID
-            trace_id: Tracing ID for observability
-            tool_usage_map: Map of tool names to usage IDs
-
-        Yields:
-            Events for tool approval, tool call, etc.
-        """
-        # Extract tool information
-        tool_name = event.metadata.get("tool_name", "unknown") if event.metadata else "unknown"
-        tool_args = event.metadata.get("tool_args", {}) if event.metadata else {}
-
-        # Check if tool requires approval
-        # TODO: Move disabled_tools to Agent level and pass to AgenticClient
-        needs_approval = self._require_tool_approval and tool_name not in self._auto_approve_tools
-
-        # Record tool usage in database
-        tool_usage_id = None
-        if self.memory_manager and turn_id:
-            try:
-                tool_usage_id = await self.memory_manager.record_tool_usage(
-                    turn_id=turn_id,
-                    entity_id=self.agent_id,
-                    tool_name=tool_name,
-                    tool_args=tool_args,
-                    requires_approval=needs_approval,
-                    trace_id=trace_id,
-                )
-            except Exception as e:
-                logger.error(f"Failed to record tool usage: {e}")
-
-        # Handle approval if needed
-        if needs_approval:
-            # Create approval request
-            approval_request = ToolApprovalRequest(
-                tool_id=tool_usage_id or "unknown",
-                tool_name=tool_name,
-                tool_args=tool_args,
-                agent_id=self.agent_id,
-                description=f"Execute {tool_name} with provided arguments",
-                risk_level="medium",  # TODO: Determine from tool metadata
-            )
-
-            # Create and store pending approval
-            pending = ToolPendingApproval(
-                tool_id=tool_usage_id or "unknown",
-                tool_name=tool_name,
-                tool_args=tool_args,
-                turn_id=turn_id,
-                trace_id=trace_id,
-                tool_usage_id=tool_usage_id,
-                original_event=event,
-            )
-            self._pending_approvals[pending.tool_id] = pending
-
-            # Yield approval request event (non-blocking!)
-            yield {
-                "stage": "tool_approval_request",
-                "content": f"{tool_name}({', '.join(f'{k}={v}' for k, v in tool_args.items())})",
-                "metadata": {
-                    "tool_name": tool_name,
-                    "tool_args": tool_args,
-                    "tool_id": tool_usage_id,
-                    "approval_request": approval_request.to_dict(),
-                },
-            }
-
-            logger.info(
-                f"Tool {tool_name} requires approval - request sent (tool_id: {tool_usage_id})"
-            )
-            # Don't execute - wait for approval response
-            return
-
-        # Auto-approved or no approval required - proceed with execution
-        if self.memory_manager and tool_usage_id:
-            try:
-                await self.memory_manager.start_tool_execution(tool_usage_id)
-                tool_usage_map[tool_name] = tool_usage_id
-            except Exception as e:
-                logger.error(f"Failed to start tool execution: {e}")
-
-        # Emit tool call event
-        yield {
-            "stage": "tool_call",
-            "content": event.content or "",
-            "metadata": {**(event.metadata or {}), "tool_usage_id": tool_usage_id},
-        }
-
-    async def _handle_tool_result_event(
-        self,
-        event: Any,
-        tool_usage_map: dict[str, str],
-        tool_results_data: list[dict[str, Any]],
-        show_tool_results: bool,
-    ) -> AsyncIterator[dict[str, Any]]:
-        """Handle tool result events.
-
-        Args:
-            event: The tool result event
-            tool_usage_map: Map of tool names to usage IDs
-            tool_results_data: List to append result data to
-            show_tool_results: Whether to yield tool result events
-
-        Yields:
-            Tool result events if show_tool_results is True
-        """
-        # Extract result information
-        tool_name = event.metadata.get("tool_name", "unknown") if event.metadata else "unknown"
-        success = event.metadata.get("success", False) if event.metadata else False
-        result = event.metadata.get("result") if event.metadata else None
-        error = event.metadata.get("error") if event.metadata else None
-        duration_ms = event.metadata.get("duration_ms") if event.metadata else None
-
-        # Track result data
-        tool_results_data.append(
-            {
-                "tool": tool_name,
-                "success": success,
-                "result": result,
-                "error": error,
-                "duration_ms": duration_ms,
-            }
-        )
-
-        # Update tool usage record with result
-        if self.memory_manager and tool_name in tool_usage_map:
-            tool_usage_id = tool_usage_map[tool_name]
-            try:
-                await self.memory_manager.complete_tool_execution(
-                    tool_usage_id=tool_usage_id,
-                    success=success,
-                    result=result,
-                    error=error,
-                    duration_ms=duration_ms,
-                )
-            except Exception as e:
-                logger.error(f"Failed to update tool execution result: {e}")
-
-        # Emit tool result event only if enabled
-        if show_tool_results:
-            yield {
-                "stage": "tool_result",
-                "content": event.content or "",
-                "metadata": event.metadata,
-            }
-
-    async def _handle_content_event(self, event: Any) -> str:
-        """Handle content events.
-
-        Args:
-            event: The content event
-
-        Returns:
-            The response content
-        """
-        return event.content or ""
-
-    async def process_approval_response(
-        self, approval_response: ToolApprovalResponse
-    ) -> AsyncIterator[dict[str, Any]]:
-        """Process a tool approval response asynchronously.
-
-        This method handles the second phase of tool approval:
-        - Validates the tool ID
-        - Updates the database
-        - Executes approved tools
-        - Cleans up pending state
-
-        Args:
-            approval_response: The approval response from the user
-
-        Yields:
-            Events for tool execution or rejection
-        """
-        tool_id = approval_response.tool_id
-
-        # Validate that we have a pending approval for this tool
-        pending = self._pending_approvals.get(tool_id)
-        if not pending:
-            # This could happen if:
-            # 1. The approval already timed out and was cleaned up
-            # 2. The tool_id is invalid
-            # 3. The approval was already processed
-            logger.warning(
-                f"No pending approval found for tool_id: {tool_id}. "
-                f"It may have already timed out or been processed."
-            )
-
-            # Still update the database if we can (for record keeping)
-            if self.memory_manager and tool_id and tool_id != "unknown":
-                try:
-                    await self.memory_manager.update_tool_approval(
-                        tool_id,
-                        approved=approval_response.decision == ToolApprovalDecision.APPROVED,
-                        user_feedback=approval_response.feedback or "Received after timeout",
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to update late approval in database: {e}")
-
-            # Yield an informational event
-            yield {
-                "stage": "tool_approval_late",
-                "content": f"Approval received too late for tool {tool_id}",
-                "metadata": {
-                    "tool_id": tool_id,
-                    "decision": approval_response.decision.value,
-                    "reason": "No pending approval found - likely timed out",
-                },
-            }
-            return
-
-        # Remove from pending approvals
-        del self._pending_approvals[tool_id]
-
-        # Update database with decision
-        if self.memory_manager and pending.tool_usage_id:
-            try:
-                await self.memory_manager.update_tool_approval(
-                    pending.tool_usage_id,
-                    approved=approval_response.decision == ToolApprovalDecision.APPROVED,
-                    user_feedback=approval_response.feedback,
-                )
-            except Exception as e:
-                logger.error(f"Failed to update tool approval in database: {e}")
-
-        # Handle based on decision
-        if approval_response.decision == ToolApprovalDecision.APPROVED:
-            # Emit approval event
-            yield {
-                "stage": "tool_approved",
-                "content": f"Tool approved: {pending.tool_name}",
-                "metadata": {"tool_name": pending.tool_name, "tool_id": tool_id},
-            }
-
-            # Execute the tool
-            if self.memory_manager and pending.tool_usage_id:
-                try:
-                    await self.memory_manager.start_tool_execution(pending.tool_usage_id)
-                except Exception as e:
-                    logger.error(f"Failed to start tool execution: {e}")
-
-            # Emit tool call event (reuse original event data)
-            yield {
-                "stage": "tool_call",
-                "content": pending.original_event.content if pending.original_event else "",
-                "metadata": {
-                    **(pending.original_event.metadata if pending.original_event else {}),
-                    "tool_usage_id": pending.tool_usage_id,
-                },
-            }
-
-            # Note: The actual tool execution will happen in the agentic client
-            # and results will flow through the normal stream
-
-        else:
-            # Tool was rejected or timed out
-            yield {
-                "stage": "tool_rejected",
-                "content": f"Tool rejected: {pending.tool_name}",
-                "metadata": {
-                    "tool_name": pending.tool_name,
-                    "tool_id": tool_id,
-                    "feedback": approval_response.feedback,
-                    "decision": approval_response.decision.value,
-                },
-            }
-
-            logger.info(
-                f"Tool {pending.tool_name} was {approval_response.decision.value} "
-                f"with feedback: {approval_response.feedback}"
-            )
-
-    async def check_expired_approvals(self) -> list[dict[str, Any]]:
-        """Check for and handle expired approval requests.
-
-        This should be called periodically to clean up timed-out requests.
-
-        Returns:
-            List of timeout events that should be yielded to the stream
-        """
-
-        expired_ids = []
-        timeout_events = []
-
-        for tool_id, pending in self._pending_approvals.items():
-            if pending.is_expired(self._approval_timeout):
-                expired_ids.append(tool_id)
-
-        # Process expired approvals
-        for tool_id in expired_ids:
-            pending = self._pending_approvals[tool_id]
-            logger.warning(f"Tool approval timed out for {pending.tool_name} (tool_id: {tool_id})")
-
-            # Remove from pending
-            del self._pending_approvals[tool_id]
-
-            # Update database (create a task to run async operation)
-            if self.memory_manager and pending.tool_usage_id:
-
-                async def update_timeout(usage_id: str) -> None:
-                    try:
-                        await self.memory_manager.update_tool_approval(
-                            usage_id, approved=False, user_feedback="Approval request timed out"
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to update timeout in database: {e}")
-
-                # Fire and forget the database update
-                asyncio.create_task(update_timeout(pending.tool_usage_id))
-
-            # Create timeout event
-            timeout_events.append(
-                {
-                    "stage": "tool_rejected",
-                    "content": f"Tool timed out: {pending.tool_name}",
-                    "metadata": {
-                        "tool_name": pending.tool_name,
-                        "tool_id": tool_id,
-                        "feedback": "Approval request timed out",
-                        "decision": ToolApprovalDecision.TIMEOUT.value,
-                    },
-                }
-            )
-
-        return timeout_events
 
     async def cleanup(self) -> None:
-        """Clean up agent resources."""
-        # Default implementation - agents can override if needed
-        pass
+        """Clean up resources."""
+        # Clean up any pending tool trackers
+        self._tool_tracker = None
+
+    async def get_available_tools(self) -> list[Tool]:
+        """Get list of available tools for this agent."""
+        return self.tools
+
+    async def get_current_model(self) -> Optional[str]:
+        """Get current model being used."""
+        return self.model
+
+    def is_initialized(self) -> bool:
+        """Check if agent is initialized."""
+        return self._initialized
 
     def get_agent_info(self) -> dict[str, Any]:
-        """
-        Get basic information about the agent.
-
-        Returns:
-            Agent information
-        """
+        """Get agent information."""
         return {
-            "name": self.name,
             "agent_id": self.agent_id,
-            "instructions": self.instructions,
+            "agent_type": self.__class__.__name__,
+            "model": self.model,
+            "tools": [t.name for t in self.tools],
+            "tool_approval_required": self._require_tool_approval,
+            "auto_approve_tools": list(self._auto_approve_tools),
             "initialized": self._initialized,
         }
-
-    async def generate_stream_with_tools(
-        self, messages: list[dict[str, Any]], **kwargs: Any
-    ) -> AsyncIterator[dict[str, Any]]:
-        """
-        Generate streaming response with tool calling support.
-
-        This is the core streaming functionality that all agents can use.
-        It handles LLM calls, tool execution, and result streaming.
-
-        Args:
-            messages: List of conversation messages
-            **kwargs: Additional parameters for LLM
-
-        Yields:
-            Dict chunks with structure:
-            - {"stage": "thinking", "content": "...", "metadata": {...}}
-            - {"stage": "llm_call", "content": "...", "metadata": {...}}
-            - {"stage": "tool_call", "content": "...", "metadata": {...}}
-            - {"stage": "tool_result", "content": "...", "metadata": {...}}
-            - {"stage": "response", "content": "...", "metadata": {"final": True}}
-        """
-        if not self.agentic_client:
-            raise ValueError(f"Agent {self.agent_id} requires an agentic client to function.")
-
-        # Create in-progress turn at the start
-        turn_id = None
-        user_message = None
-
-        if self.memory_manager and len(messages) > 0:
-            # Extract user message (last user message in conversation)
-            for msg in reversed(messages):
-                if msg.get("role") == "user":
-                    user_message = msg.get("content", "")
-                    break
-
-            if user_message:
-                # Create turn with IN_PROGRESS status
-                turn_id = await self.memory_manager.create_in_progress_turn(
-                    user_query=user_message,
-                    agent_id=self.agent_id,
-                    task_id=self.get_current_task_id(),
-                    trace_id=format(trace.get_current_span().get_span_context().trace_id, "032x")
-                    if trace.get_current_span()
-                    else None,
-                    user_metadata={"timestamp": datetime.now().isoformat()},
-                )
-
-        # Start telemetry span
-        try:
-            with self.tracer.start_as_current_span(
-                f"{self.agent_id.lower()}.generate_stream_with_tools",
-                attributes={
-                    "agent.id": self.agent_id,
-                    "agent.name": self.name,
-                    "messages.count": len(messages),
-                    "turn.id": turn_id or "none",
-                },
-            ) as span:
-                # Emit thinking stage
-                yield {
-                    "stage": "thinking",
-                    "content": "thinking: Processing your request...",
-                    "metadata": {"agent": self.name},
-                }
-
-                # Track for telemetry
-                turn_start_time = datetime.now()
-                current_span = trace.get_current_span()
-                trace_id = (
-                    format(current_span.get_span_context().trace_id, "032x")
-                    if current_span
-                    else None
-                )
-
-                span.add_event("thinking_stage_emitted")
-
-                # Emit LLM call stage
-                yield {
-                    "stage": "llm_call",
-                    "content": "llm_call: Analyzing request and available tools...",
-                    "metadata": {"messages": len(messages)},
-                }
-
-                span.add_event("llm_call_stage_emitted")
-
-                # Remove any existing 'tools' from kwargs to avoid duplicate parameters
-                kwargs.pop("tools", None)
-
-                # Convert messages to MCP format
-                from client import Message, Role
-
-                mcp_messages = [
-                    Message(role=Role(msg["role"]), content=msg["content"]) for msg in messages
-                ]
-
-                # Call LLM with streaming enabled
-                with self.tracer.start_as_current_span("agentic_client.generate") as agentic_span:
-                    agentic_span.set_attribute("llm.stream", True)
-                    agentic_span.set_attribute("llm.messages", len(mcp_messages))
-
-                    response_stream = await self.agentic_client.generate(
-                        messages=mcp_messages, stream=True, **kwargs
-                    )
-
-                # Track tool usage
-                tool_calls_used = []
-                tool_results_data: list[dict[str, Any]] = []
-                # Map tool name to tool_usage_id for updating results
-                tool_usage_map: dict[str, str] = {}
-                response_content = ""
-                event_count = 0
-
-                # Get tool result display setting (default False for cleaner output)
-                show_tool_results = getattr(self, "show_tool_results", False)
-
-                # Process streaming events
-                with self.tracer.start_as_current_span("process_streaming_events") as stream_span:
-                    async for event in response_stream:
-                        event_count += 1
-                        stream_span.add_event(
-                            f"received_event_{event.type}", {"event_number": event_count}
-                        )
-
-                        if event.is_tool_call():
-                            # Track tool calls for later reporting
-                            tool_name = (
-                                event.metadata.get("tool_name") if event.metadata else "unknown"
-                            )
-                            tool_args = (
-                                event.metadata.get("tool_args", {}) if event.metadata else {}
-                            )
-                            tool_calls_used.append({"name": tool_name, "args": tool_args})
-
-                            # Delegate to handler
-                            async for handler_event in self._handle_tool_call_event(
-                                event, turn_id, trace_id, tool_usage_map
-                            ):
-                                yield handler_event
-                        elif event.is_tool_result():
-                            # Delegate to handler
-                            async for handler_event in self._handle_tool_result_event(
-                                event, tool_usage_map, tool_results_data, show_tool_results
-                            ):
-                                yield handler_event
-                        elif event.is_content():
-                            # Delegate to handler
-                            response_content = await self._handle_content_event(event)
-
-                    stream_span.set_attribute("total_events", event_count)
-
-                # Update conversation turn if we created one
-                if self.memory_manager and turn_id:
-                    turn_end_time = datetime.now()
-                    total_duration_ms = (turn_end_time - turn_start_time).total_seconds() * 1000
-
-                    await self.memory_manager.update_turn_completion(
-                        turn_id=turn_id,
-                        agent_response=response_content,
-                        llm_context={
-                            "messages": messages,
-                            "model": kwargs.get("model", "unknown"),
-                            "temperature": kwargs.get("temperature", 0.7),
-                            "timestamp": turn_start_time.isoformat(),
-                        },
-                        tools_used=tool_calls_used,
-                        tool_results=tool_results_data,
-                        performance_metrics={
-                            "total_duration_ms": total_duration_ms,
-                            "llm_duration_ms": self.agentic_client.last_llm_duration_ms,
-                            "tools_duration_ms": self.agentic_client.last_tools_duration_ms,
-                        },
-                        agent_metadata={
-                            "agent_id": self.agent_id,
-                            "timestamp": turn_end_time.isoformat(),
-                            "model": kwargs.get("model", "unknown"),
-                        },
-                        status=TurnStatus.COMPLETED,
-                    )
-
-                span.add_event("response_stored")
-                span.set_attribute("response.length", len(response_content))
-
-                # Emit final response
-                yield {
-                    "stage": "response",
-                    "content": response_content,
-                    "metadata": {"final": True},
-                }
-
-        except Exception as e:
-            # Handle errors by updating the turn status
-            if self.memory_manager and turn_id:
-                await self.memory_manager.update_turn_completion(
-                    turn_id=turn_id,
-                    agent_response="",
-                    status=TurnStatus.ERROR,
-                    error_details={
-                        "error": str(e),
-                        "error_type": type(e).__name__,
-                        "timestamp": datetime.now().isoformat(),
-                    },
-                )
-
-            # Yield error stage instead of re-raising to allow graceful stream completion
-            logger.error(f"Error in generate_stream_with_tools: {e}", exc_info=True)
-            yield {
-                "stage": "error",
-                "content": f"An error occurred: {str(e)}",
-                "metadata": {
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                    "timestamp": datetime.now().isoformat(),
-                },
-            }

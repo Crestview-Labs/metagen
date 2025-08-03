@@ -16,14 +16,14 @@ logger = logging.getLogger(__name__)
 
 
 def init_telemetry(
-    service_name: str = "metagen", enable_console: bool = False, db_manager: Any = None
+    service_name: str = "metagen", enable_console: bool = False, db_engine: Any = None
 ) -> None:
     """Initialize OpenTelemetry with flexible export options.
 
     Args:
         service_name: Name of the service for tracing
         enable_console: Whether to enable console output
-        db_manager: DatabaseManager instance for SQLite storage
+        db_engine: DatabaseEngine instance for SQLite storage
     """
 
     # Create resource
@@ -60,9 +60,9 @@ def init_telemetry(
     tracer_provider.add_span_processor(BatchSpanProcessor(memory_exporter))
 
     # Enable SQLite span storage for persistence
-    if db_manager:
+    if db_engine:
         try:
-            sqlite_exporter = SQLiteSpanExporter(db_manager)
+            sqlite_exporter = SQLiteSpanExporter(db_engine)
             tracer_provider.add_span_processor(BatchSpanProcessor(sqlite_exporter))
 
             # Store global reference for API access

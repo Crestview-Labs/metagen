@@ -51,6 +51,7 @@ dependencies = [
     "google-auth-httplib2>=0.2.0",
     "google-auth-oauthlib>=1.2.2",
     "pytest-asyncio>=1.0.0",
+    "sqlmodel>=0.0.24",
 ]
 
 [project.optional-dependencies]
@@ -170,20 +171,13 @@ exclude = [
 ]
 
 [[tool.mypy.overrides]]
-module = "memory.storage.migrations.*"
+module = "db.alembic.versions.*"
 ignore_errors = true
 
 [tool.black]
 line-length = 100
 target-version = ["py312"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-asyncio_mode = "auto"
-pythonpath = ["."]
 
 [dependency-groups]
 dev = [

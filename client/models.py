@@ -291,7 +291,7 @@ MODELS = {
 
 
 # Capability-based model groupings
-# Models with reasoning + tool calling for AgenticClient
+# Models with reasoning + tool calling for LLMClient
 REASONING_MODELS = [
     ModelID.CLAUDE_OPUS_4,  # Default
     ModelID.O3_PRO,
@@ -313,6 +313,9 @@ STRUCTURED_OUTPUT_MODELS = [
 
 # Default model configuration for clients and tools
 # TODO: Make the model config structure richer later - add constraints, preferences, etc.
+# TODO: Update this configuration to work with LLMClient instead of AgenticClient/StructuredClient
+# The capability-based grouping (REASONING_MODELS vs STRUCTURED_OUTPUT_MODELS) needs to be
+# preserved but mapped differently now that we have a unified LLMClient
 DEFAULT_MODEL_CONFIG = {
     "AgenticClient": {"default_model": ModelID.CLAUDE_OPUS_4, "supported_models": REASONING_MODELS},
     "StructuredClient": {

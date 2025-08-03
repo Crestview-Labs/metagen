@@ -3,8 +3,8 @@
 import logging
 from typing import Any
 
-from client.base_client import BaseClient
-from memory.storage.manager import MemoryManager
+from agents.memory.memory_manager import MemoryManager
+from client.llm_client import LLMClient
 from tools.core.memory_tools import (
     BuildLongTermMemoriesInput,
     BuildLongTermMemoriesOutput,
@@ -23,7 +23,7 @@ class MemoryManagementService:
     This service calls the same core tools that agents use for memory operations.
     """
 
-    def __init__(self, memory_manager: MemoryManager, llm_client: BaseClient):
+    def __init__(self, memory_manager: MemoryManager, llm_client: LLMClient):
         """Initialize memory management service."""
         self.memory_manager = memory_manager
         self.llm_client = llm_client
