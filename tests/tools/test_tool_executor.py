@@ -135,7 +135,7 @@ class TestToolExecutor:
         ) -> Optional[ToolCallResult]:
             return ToolCallResult(
                 tool_name=tool_name,
-                tool_call_id="",  # Will be set by executor
+                tool_call_id=None,  # Will be set by executor
                 content="Intercepted!",
                 is_error=False,
                 error=None,
@@ -208,7 +208,7 @@ class TestToolExecutor:
         async def interceptor(tool_name: str, params: dict[str, Any]) -> Optional[ToolCallResult]:
             return ToolCallResult(
                 tool_name=tool_name,
-                tool_call_id="",  # Will be set by executor
+                tool_call_id=None,  # Will be set by executor
                 content="Intercepted!",
                 is_error=False,
                 error=None,
@@ -329,7 +329,7 @@ class TestToolExecutor:
         async def interceptor(tool_name: str, params: dict[str, Any]) -> Optional[ToolCallResult]:
             return ToolCallResult(
                 tool_name=tool_name,
-                tool_call_id="",  # Will be set by executor
+                tool_call_id=None,  # Will be set by executor
                 content="Intercepted",
                 is_error=False,
                 error=None,
