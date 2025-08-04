@@ -1,8 +1,8 @@
-"""Init SQLModel schema
+"""Initial schema
 
-Revision ID: 8a53c3d8e0e0
+Revision ID: 0b97d6f2e6b7
 Revises:
-Create Date: 2025-07-29 11:58:59.961494
+Create Date: 2025-08-03 19:59:45.870860
 
 """
 
@@ -13,7 +13,7 @@ import sqlmodel
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "8a53c3d8e0e0"
+revision: str = "0b97d6f2e6b7"
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -71,7 +71,6 @@ def upgrade() -> None:
         sa.Column("task_id", sqlmodel.sql.sqltypes.AutoString(), nullable=True),
         sa.Column("llm_context", sa.JSON(), nullable=True),
         sa.Column("tools_used", sa.Boolean(), nullable=False),
-        sa.Column("trace_id", sqlmodel.sql.sqltypes.AutoString(length=32), nullable=True),
         sa.Column("total_duration_ms", sa.Float(), nullable=True),
         sa.Column("llm_duration_ms", sa.Float(), nullable=True),
         sa.Column("tools_duration_ms", sa.Float(), nullable=True),
@@ -117,9 +116,6 @@ def upgrade() -> None:
     op.create_index(
         op.f("ix_conversation_turns_timestamp"), "conversation_turns", ["timestamp"], unique=False
     )
-    op.create_index(
-        op.f("ix_conversation_turns_trace_id"), "conversation_turns", ["trace_id"], unique=False
-    )
     op.create_table(
         "long_term_memories",
         sa.Column("created_at", sa.DateTime(), nullable=False),
@@ -136,47 +132,15 @@ def upgrade() -> None:
         op.f("ix_long_term_memories_task_id"), "long_term_memories", ["task_id"], unique=False
     )
     op.create_table(
-        "tasks",
+        "task_configs",
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
         sa.Column("id", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column("name", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-        sa.Column("description", sa.Text(), nullable=True),
-        sa.Column("goal", sa.Text(), nullable=True),
-        sa.Column("task_type", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-        sa.Column("priority", sa.Integer(), nullable=False),
-        sa.Column("tags", sa.JSON(), nullable=True),
-        sa.Column("assigned_agent_id", sqlmodel.sql.sqltypes.AutoString(), nullable=True),
-        sa.Column("agent_type", sqlmodel.sql.sqltypes.AutoString(), nullable=True),
-        sa.Column("config", sa.JSON(), nullable=True),
-        sa.Column("context", sa.JSON(), nullable=True),
-        sa.Column("status", sa.String(), nullable=True),
-        sa.Column("started_at", sa.DateTime(), nullable=True),
-        sa.Column("completed_at", sa.DateTime(), nullable=True),
-        sa.Column("result", sa.JSON(), nullable=True),
-        sa.Column("error", sa.Text(), nullable=True),
-        sa.Column("outputs", sa.JSON(), nullable=True),
-        sa.Column("progress_percentage", sa.Integer(), nullable=False),
-        sa.Column("progress_message", sqlmodel.sql.sqltypes.AutoString(), nullable=True),
-        sa.Column("milestones", sa.JSON(), nullable=True),
-        sa.Column("execution_time_ms", sa.Float(), nullable=True),
-        sa.Column("tokens_used", sa.Integer(), nullable=True),
-        sa.Column("tool_calls_count", sa.Integer(), nullable=True),
-        sa.Column("parent_task_id", sqlmodel.sql.sqltypes.AutoString(), nullable=True),
-        sa.ForeignKeyConstraint(["parent_task_id"], ["tasks.id"]),
+        sa.Column("definition", sa.JSON(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(
-        "idx_tasks_assigned_agent", "tasks", ["assigned_agent_id", "status"], unique=False
-    )
-    op.create_index("idx_tasks_status_priority", "tasks", ["status", "priority"], unique=False)
-    op.create_index("idx_tasks_type_status", "tasks", ["task_type", "status"], unique=False)
-    op.create_index(
-        op.f("ix_tasks_assigned_agent_id"), "tasks", ["assigned_agent_id"], unique=False
-    )
-    op.create_index(op.f("ix_tasks_parent_task_id"), "tasks", ["parent_task_id"], unique=False)
-    op.create_index(op.f("ix_tasks_status"), "tasks", ["status"], unique=False)
-    op.create_index(op.f("ix_tasks_task_type"), "tasks", ["task_type"], unique=False)
+    op.create_index(op.f("ix_task_configs_name"), "task_configs", ["name"], unique=False)
     op.create_table(
         "telemetry_spans",
         sa.Column("span_id", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
@@ -204,80 +168,15 @@ def upgrade() -> None:
         op.f("ix_telemetry_spans_trace_id"), "telemetry_spans", ["trace_id"], unique=False
     )
     op.create_table(
-        "task_execution_requests",
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
-        sa.Column("id", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-        sa.Column("task_id", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-        sa.Column("requested_by", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-        sa.Column("request_type", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-        sa.Column("retry_count", sa.Integer(), nullable=False),
-        sa.Column("started_at", sa.DateTime(), nullable=True),
-        sa.Column("completed_at", sa.DateTime(), nullable=True),
-        sa.Column("status", sa.String(), nullable=True),
-        sa.Column("result", sa.JSON(), nullable=True),
-        sa.Column("error", sa.Text(), nullable=True),
-        sa.Column("execution_context", sa.JSON(), nullable=True),
-        sa.ForeignKeyConstraint(["task_id"], ["tasks.id"]),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index(
-        "idx_execution_requests_created", "task_execution_requests", ["created_at"], unique=False
-    )
-    op.create_index(
-        "idx_execution_requests_task_status",
-        "task_execution_requests",
-        ["task_id", "status"],
-        unique=False,
-    )
-    op.create_index(
-        op.f("ix_task_execution_requests_status"),
-        "task_execution_requests",
-        ["status"],
-        unique=False,
-    )
-    op.create_index(
-        op.f("ix_task_execution_requests_task_id"),
-        "task_execution_requests",
-        ["task_id"],
-        unique=False,
-    )
-    op.create_table(
-        "task_parameters",
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
-        sa.Column("id", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-        sa.Column("task_id", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-        sa.Column("name", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-        sa.Column("description", sqlmodel.sql.sqltypes.AutoString(), nullable=True),
-        sa.Column("parameter_type", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-        sa.Column("required", sa.Boolean(), nullable=False),
-        sa.Column("default_value", sa.JSON(), nullable=True),
-        sa.Column("validation_rules", sa.JSON(), nullable=True),
-        sa.Column("allowed_values", sa.JSON(), nullable=True),
-        sa.Column("display_order", sa.Integer(), nullable=False),
-        sa.Column("ui_hints", sa.JSON(), nullable=True),
-        sa.ForeignKeyConstraint(["task_id"], ["tasks.id"]),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index(
-        "idx_task_parameters_task_order",
-        "task_parameters",
-        ["task_id", "display_order"],
-        unique=False,
-    )
-    op.create_index(
-        op.f("ix_task_parameters_task_id"), "task_parameters", ["task_id"], unique=False
-    )
-    op.create_table(
         "tool_usage",
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
         sa.Column("id", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column("turn_id", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
-        sa.Column("entity_id", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column("agent_id", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column("tool_name", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column("tool_args", sa.JSON(), nullable=True),
+        sa.Column("tool_call_id", sqlmodel.sql.sqltypes.AutoString(), nullable=True),
         sa.Column("requires_approval", sa.Boolean(), nullable=False),
         sa.Column("user_decision", sqlmodel.sql.sqltypes.AutoString(), nullable=True),
         sa.Column("user_feedback", sqlmodel.sql.sqltypes.AutoString(), nullable=True),
@@ -289,12 +188,11 @@ def upgrade() -> None:
         sa.Column("execution_error", sqlmodel.sql.sqltypes.AutoString(), nullable=True),
         sa.Column("duration_ms", sa.Float(), nullable=True),
         sa.Column("tokens_used", sa.Integer(), nullable=True),
-        sa.Column("trace_id", sqlmodel.sql.sqltypes.AutoString(length=32), nullable=True),
         sa.ForeignKeyConstraint(["turn_id"], ["conversation_turns.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("idx_tool_usage_created", "tool_usage", ["created_at"], unique=False)
-    op.create_index(op.f("ix_tool_usage_entity_id"), "tool_usage", ["entity_id"], unique=False)
+    op.create_index(op.f("ix_tool_usage_agent_id"), "tool_usage", ["agent_id"], unique=False)
     op.create_index(
         op.f("ix_tool_usage_execution_status"), "tool_usage", ["execution_status"], unique=False
     )
@@ -313,17 +211,9 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_tool_usage_turn_id"), table_name="tool_usage")
     op.drop_index(op.f("ix_tool_usage_tool_name"), table_name="tool_usage")
     op.drop_index(op.f("ix_tool_usage_execution_status"), table_name="tool_usage")
-    op.drop_index(op.f("ix_tool_usage_entity_id"), table_name="tool_usage")
+    op.drop_index(op.f("ix_tool_usage_agent_id"), table_name="tool_usage")
     op.drop_index("idx_tool_usage_created", table_name="tool_usage")
     op.drop_table("tool_usage")
-    op.drop_index(op.f("ix_task_parameters_task_id"), table_name="task_parameters")
-    op.drop_index("idx_task_parameters_task_order", table_name="task_parameters")
-    op.drop_table("task_parameters")
-    op.drop_index(op.f("ix_task_execution_requests_task_id"), table_name="task_execution_requests")
-    op.drop_index(op.f("ix_task_execution_requests_status"), table_name="task_execution_requests")
-    op.drop_index("idx_execution_requests_task_status", table_name="task_execution_requests")
-    op.drop_index("idx_execution_requests_created", table_name="task_execution_requests")
-    op.drop_table("task_execution_requests")
     op.drop_index(op.f("ix_telemetry_spans_trace_id"), table_name="telemetry_spans")
     op.drop_index(op.f("ix_telemetry_spans_start_time"), table_name="telemetry_spans")
     op.drop_index(op.f("ix_telemetry_spans_name"), table_name="telemetry_spans")
@@ -331,18 +221,11 @@ def downgrade() -> None:
     op.drop_index("idx_telemetry_start_time", table_name="telemetry_spans")
     op.drop_index("idx_telemetry_name", table_name="telemetry_spans")
     op.drop_table("telemetry_spans")
-    op.drop_index(op.f("ix_tasks_task_type"), table_name="tasks")
-    op.drop_index(op.f("ix_tasks_status"), table_name="tasks")
-    op.drop_index(op.f("ix_tasks_parent_task_id"), table_name="tasks")
-    op.drop_index(op.f("ix_tasks_assigned_agent_id"), table_name="tasks")
-    op.drop_index("idx_tasks_type_status", table_name="tasks")
-    op.drop_index("idx_tasks_status_priority", table_name="tasks")
-    op.drop_index("idx_tasks_assigned_agent", table_name="tasks")
-    op.drop_table("tasks")
+    op.drop_index(op.f("ix_task_configs_name"), table_name="task_configs")
+    op.drop_table("task_configs")
     op.drop_index(op.f("ix_long_term_memories_task_id"), table_name="long_term_memories")
     op.drop_index("idx_long_term_memories_created_at", table_name="long_term_memories")
     op.drop_table("long_term_memories")
-    op.drop_index(op.f("ix_conversation_turns_trace_id"), table_name="conversation_turns")
     op.drop_index(op.f("ix_conversation_turns_timestamp"), table_name="conversation_turns")
     op.drop_index(op.f("ix_conversation_turns_task_id"), table_name="conversation_turns")
     op.drop_index(op.f("ix_conversation_turns_agent_id"), table_name="conversation_turns")

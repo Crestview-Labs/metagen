@@ -19,6 +19,7 @@ from common.messages import (
     AgentMessage,
     ApprovalRequestMessage,
     ApprovalResponseMessage,
+    ChatMessage,
     ErrorMessage,
     Message,
     ThinkingMessage,
@@ -26,7 +27,7 @@ from common.messages import (
     ToolResultMessage,
     UserMessage,
 )
-from common.types import ToolCallResult, ToolErrorType
+from common.types import ParameterValue, TaskExecutionContext, ToolCallResult, ToolErrorType
 from tools.base import Tool
 from tools.registry import (
     ToolRegistry,
@@ -214,7 +215,7 @@ class AgentManager:
                 message = await self.meta_agent_input.get()
                 # Get message content for logging
                 msg_preview = (
-                    message.content[:50] if hasattr(message, "content") else str(message)[:50]
+                    message.content[:50] if isinstance(message, ChatMessage) else str(message)[:50]
                 )
                 logger.info(
                     f"📥 MetaAgent received message from queue: "
@@ -399,7 +400,7 @@ class AgentManager:
     def _log_message(self, msg: Any, prefix: str = "📨") -> None:
         """Helper to log messages in a clean way."""
         msg_type = type(msg).__name__
-        content = getattr(msg, "content", "")[:50] if hasattr(msg, "content") else ""
+        content = msg.content[:50] if isinstance(msg, ChatMessage) else ""
 
         # Only log important message types
         if isinstance(
@@ -567,7 +568,9 @@ class AgentManager:
         Sends user message to MetaAgent and streams all agent outputs back to CLI.
         """
         # Get message content for logging
-        msg_preview = message.content[:50] if hasattr(message, "content") else str(message)[:50]
+        msg_preview = (
+            message.content[:50] if isinstance(message, ChatMessage) else str(message)[:50]
+        )
         logger.debug(f"🚀 Chat stream started with message: {msg_preview}...")
 
         if not self._initialized:
@@ -876,10 +879,8 @@ class AgentManager:
                     metadata={},
                 )
 
-            # Access storage backend directly as it has get_task method
-            # TODO: Add proper type for storage backend that includes task methods
-            storage = self.memory_manager.storage  # type: ignore[attr-defined]
-            task = await storage.get_task(task_id)  # type: ignore[attr-defined]
+            # Get task from memory manager
+            task = await self.memory_manager.get_task(task_id)
             if not task:
                 return ToolCallResult(
                     tool_name=tool_name,
@@ -892,11 +893,23 @@ class AgentManager:
                     metadata={},
                 )
 
-            # Create TaskExecutionRequest
-            from common.models import TaskExecutionRequest
+            # Convert input values to typed parameter values
+            typed_values = {}
+            for key, value in input_values.items():
+                # Find parameter in task definition
+                param = next((p for p in task.definition.input_schema if p.name == key), None)
+                if param:
+                    typed_values[key] = ParameterValue(value=value, parameter_type=param.type)
 
-            task_request = TaskExecutionRequest.create_for_task(
-                task_id=task_id, input_values=input_values
+            # Create execution context
+            context = TaskExecutionContext(
+                task_id=task_id,
+                task_name=task.name,
+                instructions=task.definition.instructions,
+                input_values=typed_values,
+                retry_count=0,
+                timeout_seconds=None,
+                allowed_tools=None,
             )
 
             # Set current task on the agent
@@ -912,10 +925,10 @@ class AgentManager:
                     metadata={},
                 )
 
-            self.task_agent.set_current_task(task_request)
+            self.task_agent.set_current_task(context)
 
             # Build task prompt and send to TaskExecutionAgent
-            task_prompt = self.task_agent.build_task_prompt(task_request)
+            task_prompt = self.task_agent.build_task_prompt(context)
             await self.task_agent_input.put(task_prompt)
 
             logger.info(f"Sent task '{task.name}' to TaskExecutionAgent, waiting for completion")
@@ -933,7 +946,7 @@ class AgentManager:
 
             return ToolCallResult(
                 tool_name=tool_name,
-                tool_call_id=task_request.id,
+                tool_call_id=f"execute_task_{task_id}",
                 content=final_result,
                 is_error=False,
                 error=None,

@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Optional
 
-from common.models import CompactMemory, ConversationTurn, Task, ToolUsage
+from common.models import CompactMemory, ConversationTurn, TaskConfig, ToolUsage
 
 
 class MemoryBackend(ABC):
@@ -88,17 +88,17 @@ class MemoryBackend(ABC):
 
     # Task management methods
     @abstractmethod
-    async def store_task(self, task: Task) -> str:
+    async def store_task(self, task: TaskConfig) -> str:
         """Store a task and return its ID."""
         pass
 
     @abstractmethod
-    async def get_task(self, task_id: str) -> Optional[Task]:
+    async def get_task(self, task_id: str) -> Optional[TaskConfig]:
         """Get a task by ID."""
         pass
 
     @abstractmethod
-    async def update_task(self, task: Task) -> bool:
+    async def update_task(self, task: TaskConfig) -> bool:
         """Update a task."""
         pass
 
@@ -108,7 +108,7 @@ class MemoryBackend(ABC):
         pass
 
     @abstractmethod
-    async def get_all_tasks(self, limit: int = 50) -> list[Task]:
+    async def get_all_tasks(self, limit: int = 50) -> list[TaskConfig]:
         """Get all tasks with optional limit."""
         pass
 

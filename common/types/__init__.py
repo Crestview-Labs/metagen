@@ -1,5 +1,7 @@
 """Common types module."""
 
+from common.models.enums import ParameterType
+
 from .memory import (
     ToolApprovalUpdate,
     ToolExecutionComplete,
@@ -9,6 +11,7 @@ from .memory import (
     TurnCreationRequest,
     TurnUpdateRequest,
 )
+from .task import ParameterValue, TaskExecutionContext
 from .tools import TOOL_ERROR_MESSAGES, ToolCall, ToolCallResult, ToolErrorType, ToolExecution
 
 __all__ = [
@@ -26,4 +29,8 @@ __all__ = [
     "ToolApprovalUpdate",
     "ToolExecutionStart",
     "ToolExecutionComplete",
+    # Task types
+    "ParameterType",
+    "ParameterValue",
+    "TaskExecutionContext",
 ]
