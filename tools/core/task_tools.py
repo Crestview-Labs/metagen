@@ -25,7 +25,6 @@ class CreateTaskOutput(BaseModel):
 
     task_id: str = Field(..., description="Created task ID")
     name: str = Field(..., description="Task name")
-    created_at: datetime = Field(..., description="Creation timestamp")
 
 
 class ListTasksInput(BaseModel):
@@ -70,8 +69,8 @@ class CreateTaskTool(BaseCoreTool):
 
     async def _execute_impl(self, input_data: BaseModel) -> BaseModel:
         """Create a new reusable task definition."""
-        # Cast to specific input type
-        task_input = CreateTaskInput.model_validate(input_data.model_dump())
+        # Input is already validated as CreateTaskInput by BaseCoreTool
+        task_input: CreateTaskInput = input_data  # type: ignore
 
         # Create task config
         task_id = str(uuid.uuid4())
@@ -87,9 +86,7 @@ class CreateTaskTool(BaseCoreTool):
         await self.memory_manager.create_task(task_config)
         logger.info(f"Created task: {task_config.name} (ID: {task_config.id})")
 
-        return CreateTaskOutput(
-            task_id=task_config.id, name=task_config.name, created_at=task_config.created_at
-        )
+        return CreateTaskOutput(task_id=task_config.id, name=task_config.name)
 
 
 class ListTasksTool(BaseCoreTool):
@@ -106,8 +103,8 @@ class ListTasksTool(BaseCoreTool):
 
     async def _execute_impl(self, input_data: BaseModel) -> BaseModel:
         """List available task definitions."""
-        # Cast to specific input type
-        list_input = ListTasksInput.model_validate(input_data.model_dump())
+        # Input is already validated as ListTasksInput by BaseCoreTool
+        list_input: ListTasksInput = input_data  # type: ignore
 
         task_configs = await self.memory_manager.list_tasks(list_input.limit)
 
@@ -138,8 +135,8 @@ class ExecuteTaskTool(BaseCoreTool):
         Note: This method is typically intercepted by AgentManager.
         This implementation is a fallback that validates the task exists.
         """
-        # Cast to specific input type
-        exec_input = ExecuteTaskInput.model_validate(input_data.model_dump())
+        # Input is already validated as ExecuteTaskInput by BaseCoreTool
+        exec_input: ExecuteTaskInput = input_data  # type: ignore
 
         # Get task config to validate it exists
         task_config = await self.memory_manager.get_task(exec_input.task_id)

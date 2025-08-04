@@ -7,11 +7,12 @@ from typing import Any, Optional
 
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
-from sqlalchemy import JSON, Column
+from sqlalchemy import Column
 from sqlmodel import Field
 
 from .base import TimestampedModel
 from .enums import ParameterType
+from .types import PydanticJSON
 
 
 class Parameter(BaseModel):
@@ -48,8 +49,8 @@ class TaskConfig(TimestampedModel, table=True):
     id: str = Field(primary_key=True, description="Unique task config ID")
     name: str = Field(index=True, description="Human-readable task name")
 
-    # Task definition stored as JSON
+    # Task definition stored as JSON with automatic serialization
     definition: TaskDefinition = Field(
-        sa_column=Column(JSON),
+        sa_column=Column(PydanticJSON(TaskDefinition)),
         description="Complete task definition including instructions and schemas",
     )
