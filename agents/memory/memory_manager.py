@@ -8,7 +8,7 @@ from typing import Any, Optional
 from common.models import (
     CompactMemory,
     ConversationTurn,
-    Task,
+    TaskConfig,
     ToolUsage,
     ToolUsageStatus,
     TurnStatus,
@@ -749,40 +749,40 @@ class MemoryManager:
 
     # Task Management Methods
 
-    async def create_task(self, task: "Task") -> str:
+    async def create_task(self, task: "TaskConfig") -> str:
         """Create a new task definition.
 
         Args:
-            task: Task object to store
+            task: TaskConfig object to store
 
         Returns:
             Task ID
         """
         return await self._storage.store_task(task)
 
-    async def list_tasks(self, limit: int = 50) -> list["Task"]:
+    async def list_tasks(self, limit: int = 50) -> list["TaskConfig"]:
         """List all available tasks.
 
         Args:
             limit: Maximum number of tasks to return
 
         Returns:
-            List of Task objects
+            List of TaskConfig objects
         """
         return await self._storage.get_all_tasks(limit)
 
-    async def get_task(self, task_id: str) -> Optional["Task"]:
+    async def get_task(self, task_id: str) -> Optional["TaskConfig"]:
         """Get a specific task by ID.
 
         Args:
             task_id: Task identifier
 
         Returns:
-            Task object if found, None otherwise
+            TaskConfig object if found, None otherwise
         """
         return await self._storage.get_task(task_id)
 
-    async def update_task(self, task: "Task") -> bool:
+    async def update_task(self, task: "TaskConfig") -> bool:
         """Update an existing task.
 
         Args:

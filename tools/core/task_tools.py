@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from agents.memory import MemoryManager
-from common.models import Task, TaskExecutionRequest, TaskParameter
+from common.models import TaskConfig, TaskDefinition
 from tools.base import BaseCoreTool
 
 logger = logging.getLogger(__name__)
@@ -17,15 +17,7 @@ logger = logging.getLogger(__name__)
 class CreateTaskInput(BaseModel):
     """Input for creating a reusable task definition."""
 
-    name: str = Field(..., description="Task name")
-    description: str = Field(..., description="Task description")
-    instructions: str = Field(..., description="Parameterized instructions for task execution")
-    input_parameters: list[dict[str, Any]] = Field(
-        default_factory=list, description="Input parameter definitions"
-    )
-    output_parameters: list[dict[str, Any]] = Field(
-        default_factory=list, description="Output parameter definitions"
-    )
+    task_definition: TaskDefinition = Field(..., description="Complete task definition")
 
 
 class CreateTaskOutput(BaseModel):
@@ -33,7 +25,7 @@ class CreateTaskOutput(BaseModel):
 
     task_id: str = Field(..., description="Created task ID")
     name: str = Field(..., description="Task name")
-    created_at: str = Field(..., description="Creation timestamp")
+    created_at: datetime = Field(..., description="Creation timestamp")
 
 
 class ListTasksInput(BaseModel):
@@ -45,7 +37,7 @@ class ListTasksInput(BaseModel):
 class ListTasksOutput(BaseModel):
     """Output from listing task definitions."""
 
-    tasks: list[dict[str, Any]] = Field(..., description="List of task definitions")
+    tasks: list[TaskDefinition] = Field(..., description="List of task definitions")
     total_count: int = Field(..., description="Total number of tasks")
 
 
@@ -57,12 +49,11 @@ class ExecuteTaskInput(BaseModel):
 
 
 class ExecuteTaskOutput(BaseModel):
-    """Output from creating a task execution request."""
+    """Output from task execution."""
 
-    execution_request_id: str = Field(..., description="Execution request ID")
-    agent_id: str = Field(..., description="Agent ID that will execute the task")
+    task_id: str = Field(..., description="Task ID that was executed")
     task_name: str = Field(..., description="Task name")
-    resolved_instructions: str = Field(..., description="Instructions with parameters resolved")
+    agent_id: str = Field(..., description="Agent ID that will execute the task")
 
 
 class CreateTaskTool(BaseCoreTool):
@@ -82,35 +73,22 @@ class CreateTaskTool(BaseCoreTool):
         # Cast to specific input type
         task_input = CreateTaskInput.model_validate(input_data.model_dump())
 
-        # Convert input parameters to TaskParameter objects
-        input_params = []
-        for param_data in task_input.input_parameters:
-            input_params.append(TaskParameter(**param_data))
-
-        output_params = []
-        for param_data in task_input.output_parameters:
-            output_params.append(TaskParameter(**param_data))
-
-        # Create task
+        # Create task config
         task_id = str(uuid.uuid4())
-        task = Task(
+        task_config = TaskConfig(
             id=task_id,
-            name=task_input.name,
-            description=task_input.description,
-            instructions=task_input.instructions,
-            input_parameters=input_params,
-            output_parameters=output_params,
+            name=task_input.task_definition.name,
+            definition=task_input.task_definition,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
-            usage_count=0,
         )
 
         # Store in database
-        await self.memory_manager.create_task(task)
-        logger.info(f"Created task: {task.name} (ID: {task.id})")
+        await self.memory_manager.create_task(task_config)
+        logger.info(f"Created task: {task_config.name} (ID: {task_config.id})")
 
         return CreateTaskOutput(
-            task_id=task.id, name=task.name, created_at=task.created_at.isoformat()
+            task_id=task_config.id, name=task_config.name, created_at=task_config.created_at
         )
 
 
@@ -131,88 +109,56 @@ class ListTasksTool(BaseCoreTool):
         # Cast to specific input type
         list_input = ListTasksInput.model_validate(input_data.model_dump())
 
-        tasks = await self.memory_manager.list_tasks(list_input.limit)
+        task_configs = await self.memory_manager.list_tasks(list_input.limit)
 
-        task_list = []
-        for task in tasks:
-            task_list.append(
-                {
-                    "task_id": task.id,
-                    "name": task.name,
-                    "description": task.description,
-                    "usage_count": task.usage_count,
-                    "created_at": task.created_at.isoformat(),
-                    # TODO: Fix this when we convert input_parameters back to proper
-                    # TaskParameter relationships
-                    "input_parameters": [
-                        {
-                            "name": p.get("name", ""),
-                            "type": p.get("parameter_type", "string"),
-                            "description": p.get("description", ""),
-                            "required": p.get("required", False),
-                            "example_value": p.get("default_value"),
-                        }
-                        for p in task.input_parameters
-                    ],
-                }
-            )
+        # Extract task definitions from configs
+        task_definitions = [config.definition for config in task_configs]
 
-        return ListTasksOutput(tasks=task_list, total_count=len(task_list))
+        return ListTasksOutput(tasks=task_definitions, total_count=len(task_definitions))
 
 
 class ExecuteTaskTool(BaseCoreTool):
-    """Tool for executing a task definition (creates TaskExecutionRequest)."""
+    """Tool for executing a task definition.
+
+    This tool is intercepted by AgentManager and routed to TaskExecutionAgent.
+    """
 
     def __init__(self, memory_manager: MemoryManager):
         super().__init__(
             name="execute_task",
-            description=(
-                "Execute a task definition by creating a TaskExecutionRequest "
-                "with specific input values"
-            ),
+            description="Execute a task definition with specific input values",
             input_schema=ExecuteTaskInput,
             output_schema=ExecuteTaskOutput,
         )
         self.memory_manager = memory_manager
 
     async def _execute_impl(self, input_data: BaseModel) -> BaseModel:
-        """Create an execution request for a task definition."""
+        """Execute a task definition.
+
+        Note: This method is typically intercepted by AgentManager.
+        This implementation is a fallback that validates the task exists.
+        """
         # Cast to specific input type
         exec_input = ExecuteTaskInput.model_validate(input_data.model_dump())
 
-        # Get task definition
-        task = await self.memory_manager.get_task(exec_input.task_id)
-        if not task:
+        # Get task config to validate it exists
+        task_config = await self.memory_manager.get_task(exec_input.task_id)
+        if not task_config:
             raise ValueError(f"Task definition not found: {exec_input.task_id}")
 
         # Validate input parameters
-        missing_params = task.validate_input_parameters(exec_input.input_values)
+        missing_params = []
+        for param in task_config.definition.input_schema:
+            if param.required and param.name not in exec_input.input_values:
+                missing_params.append(param.name)
+
         if missing_params:
             raise ValueError(f"Missing required parameters: {missing_params}")
 
-        # Apply defaults for optional parameters
-        validated_inputs = {}
-        for param in task.input_parameters:
-            param_name = param["name"]
-            if param_name in exec_input.input_values:
-                validated_inputs[param_name] = exec_input.input_values[param_name]
-            elif not param.get("required", False) and param.get("default_value") is not None:
-                validated_inputs[param_name] = param["default_value"]
-
-        # Create execution request
-        execution_request = TaskExecutionRequest.create_for_task(
-            task_id=exec_input.task_id, input_values=validated_inputs
-        )
-
-        # Increment usage count
-        task.usage_count += 1
-        await self.memory_manager.update_task(task)
-
-        logger.info(f"Created execution request for task {task.name}: {execution_request.id}")
-
+        # Return basic execution info
+        # The actual execution happens in TaskExecutionAgent via interception
         return ExecuteTaskOutput(
-            execution_request_id=execution_request.id,
-            agent_id=execution_request.requested_by,  # type: ignore[attr-defined]  # TODO: Fix this mess
-            task_name=task.name,
-            resolved_instructions=task.resolve_instructions(validated_inputs),
+            task_id=task_config.id,
+            task_name=task_config.name,
+            agent_id="task_execution_agent",  # Default agent ID
         )

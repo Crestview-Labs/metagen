@@ -49,3 +49,14 @@ class ToolExecutionStage(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     ABANDONED = "abandoned"  # For tools that were in-flight when the system was shut down
+
+
+class ParameterType(str, Enum):
+    """Supported parameter types for tasks."""
+
+    STRING = "string"
+    INTEGER = "integer"
+    FLOAT = "float"
+    BOOLEAN = "boolean"
+    LIST = "list"
+    DICT = "dict"

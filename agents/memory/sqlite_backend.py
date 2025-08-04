@@ -17,7 +17,7 @@ from sqlmodel import col
 from common.models import (
     CompactMemory,
     ConversationTurn,
-    Task,
+    TaskConfig,
     ToolUsage,
     ToolUsageStatus,
     TurnStatus,
@@ -465,12 +465,12 @@ class SQLiteBackend(MemoryBackend):
             await session.commit()
             logger.debug(f"Marked compact memory {compact_id} as processed")
 
-    async def get_all_tasks(self, limit: int = 50) -> list[Task]:
+    async def get_all_tasks(self, limit: int = 50) -> list[TaskConfig]:
         """Get all tasks with optional limit."""
         if not self.async_session:
             raise RuntimeError("SQLite backend not initialized")
         async with self.async_session() as session:
-            query = select(Task).order_by(desc(col(Task.created_at)))
+            query = select(TaskConfig).order_by(desc(col(TaskConfig.created_at)))
             if limit:
                 query = query.limit(limit)
 
@@ -581,23 +581,19 @@ class SQLiteBackend(MemoryBackend):
             logger.info("SQLite backend closed")
 
     # Task Management Methods
-    async def store_task(self, task: Task) -> str:
+    async def store_task(self, task: TaskConfig) -> str:
         """Store a task and return its ID."""
         if not self.async_session:
             raise RuntimeError("SQLite backend not initialized")
         async with self.async_session() as session:
             # Parameters are already JSON dicts in the model
 
-            db_task = Task(
+            db_task = TaskConfig(
                 id=task.id,
                 name=task.name,
-                description=task.description,
-                instructions=task.instructions,
-                input_parameters=task.input_parameters,
-                output_parameters=task.output_parameters,
+                definition=task.definition,
                 created_at=task.created_at,
                 updated_at=task.updated_at,
-                usage_count=task.usage_count,
             )
 
             session.add(db_task)
@@ -606,12 +602,12 @@ class SQLiteBackend(MemoryBackend):
 
             return task.id
 
-    async def get_task(self, task_id: str) -> Optional[Task]:
+    async def get_task(self, task_id: str) -> Optional[TaskConfig]:
         """Get a task by ID."""
         if not self.async_session:
             raise RuntimeError("SQLite backend not initialized")
         async with self.async_session() as session:
-            query = select(Task).where(col(Task.id) == task_id)
+            query = select(TaskConfig).where(col(TaskConfig.id) == task_id)
             result = await session.execute(query)
             db_task = result.scalar_one_or_none()
 
@@ -619,7 +615,7 @@ class SQLiteBackend(MemoryBackend):
                 return db_task
             return None
 
-    async def update_task(self, task: Task) -> bool:
+    async def update_task(self, task: TaskConfig) -> bool:
         """Update a task."""
         if not self.async_session:
             raise RuntimeError("SQLite backend not initialized")
@@ -629,17 +625,9 @@ class SQLiteBackend(MemoryBackend):
             # Parameters are already JSON dicts in the model
 
             stmt = (
-                update(Task)
-                .where(col(Task.id) == task.id)
-                .values(
-                    name=task.name,
-                    description=task.description,
-                    instructions=task.instructions,
-                    input_parameters=task.input_parameters,
-                    output_parameters=task.output_parameters,
-                    updated_at=task.updated_at,
-                    usage_count=task.usage_count,
-                )
+                update(TaskConfig)
+                .where(col(TaskConfig.id) == task.id)
+                .values(name=task.name, definition=task.definition, updated_at=task.updated_at)
             )
             result = await session.execute(stmt)
             await session.commit()
@@ -653,7 +641,7 @@ class SQLiteBackend(MemoryBackend):
         async with self.async_session() as session:
             from sqlalchemy import delete
 
-            stmt = delete(Task).where(col(Task.id) == task_id)
+            stmt = delete(TaskConfig).where(col(TaskConfig.id) == task_id)
             result = await session.execute(stmt)
             await session.commit()
 

@@ -26,9 +26,9 @@ __all__ = [
     "CompactMemory",
     "LongTermMemory",
     # Task models
-    "Task",
-    "TaskExecutionRequest",
-    "TaskParameter",
+    "Parameter",
+    "TaskDefinition",
+    "TaskConfig",
     # Telemetry models
     "TelemetrySpan",
 ]
