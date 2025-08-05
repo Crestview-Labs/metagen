@@ -138,14 +138,14 @@ Input values provided:
     async def stream_chat(self, message: Message) -> AsyncIterator[Message]:
         """
         Override stream_chat to handle task execution and yield ToolResultMessage.
-        
+
         This ensures that task execution results are properly communicated
         to the router for FIFO coordination.
         """
         # Track execution metadata
         final_response = ""
         execution_metadata: dict[str, Any] = {"tool_calls": 0, "errors": 0, "stages": []}
-        
+
         # Use parent's stream_chat for the actual execution
         async for msg in super().stream_chat(message):
             # Track different message types
@@ -159,14 +159,14 @@ Input values provided:
             elif isinstance(msg, (ToolErrorMessage, ErrorMessage)):
                 execution_metadata["stages"].append("error")
                 execution_metadata["errors"] += 1
-            
+
             # Yield the message as-is
             yield msg
-        
+
         # After all messages are done, yield a ToolResultMessage with the complete result
         if self.current_task_context:
             success = execution_metadata["errors"] == 0 and final_response.strip()
-            
+
             if success:
                 result = ToolCallResult(
                     tool_name="execute_task",
@@ -202,7 +202,7 @@ Input values provided:
                         "execution_stats": execution_metadata,
                     },
                 )
-            
+
             # Yield the complete task result as a ToolResultMessage
             assert result.tool_call_id, "tool_call_id must not be None or empty"
             yield ToolResultMessage(

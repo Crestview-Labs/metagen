@@ -279,10 +279,10 @@ class AgentManager:
             try:
                 # Wait for task message from AgentManager (via tool interceptor)
                 task_message = await self.task_agent_input.get()
-                
+
                 # Log the task content
                 if isinstance(task_message, Message):
-                    task_preview = getattr(task_message, 'content', str(task_message))[:50]
+                    task_preview = getattr(task_message, "content", str(task_message))[:50]
                 else:
                     task_preview = str(task_message)[:50]
                 logger.info(f"TaskExecutionAgent received task: {task_preview}...")
@@ -948,7 +948,7 @@ class AgentManager:
             # Get result from FIFO queue (router now puts ToolCallResult objects)
             if self.pending_task_results:
                 task_result = self.pending_task_results.pop(0)
-                
+
                 # Router should have put a ToolCallResult from ToolResultMessage
                 if isinstance(task_result, ToolCallResult):
                     logger.info(f"Task execution completed: {task_result.user_display}")

@@ -45,7 +45,7 @@ class ToolExecutor:
 
         Args:
             tool_name: Name of the tool to intercept
-            interceptor: Async function that takes (tool_call_id, tool_name, parameters) and 
+            interceptor: Async function that takes (tool_call_id, tool_name, parameters) and
                         returns:
                         - ToolCallResult if the call should be intercepted and handled
                         - None if the call should proceed normally

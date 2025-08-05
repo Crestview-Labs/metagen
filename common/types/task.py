@@ -29,7 +29,7 @@ class TaskExecutionContext(BaseModel):
     task_name: str
     instructions: str  # Original parameterized instructions
     input_values: dict[str, ParameterValue]  # The typed parameter values
-    
+
     # Tool call tracking
     tool_call_id: str  # Original tool_call_id from the intercepted execute_task call
 

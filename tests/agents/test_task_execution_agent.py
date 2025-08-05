@@ -58,6 +58,7 @@ def mock_llm_client() -> MagicMock:
     """Create a mock LLM client."""
     return MagicMock()
 
+
 @pytest.fixture
 def task_execution_agent(
     mock_memory_manager: MagicMock, mock_llm_config: dict[str, Any], mock_llm_client: MagicMock
@@ -70,7 +71,7 @@ def task_execution_agent(
         llm_client=mock_llm_client,
         available_tools=[],
     )
-    
+
     return agent
 
 
@@ -132,29 +133,31 @@ class TestTaskExecutionAgent:
 
     @pytest.mark.asyncio
     async def test_stream_chat_with_task_context(
-        self, task_execution_agent: TaskExecutionAgent, sample_task_context: TaskExecutionContext,
-        mock_llm_client: MagicMock
+        self,
+        task_execution_agent: TaskExecutionAgent,
+        sample_task_context: TaskExecutionContext,
+        mock_llm_client: MagicMock,
     ) -> None:
         """Test stream_chat behavior when task context is set."""
         # Mock the LLM client
         mock_response = AgentMessage(content="Task processing initiated", final=True)
-        
+
         async def mock_generate_stream(*args: Any, **kwargs: Any) -> Any:
             yield mock_response
-        
+
         mock_llm_client.generate_stream_with_tools = mock_generate_stream
-        
+
         # Set the task context
         task_execution_agent.set_current_task(sample_task_context)
-        
+
         # Create a user message
         user_msg = UserMessage(content="Please execute the current task")
-        
+
         # Collect messages from stream_chat
         messages = []
         async for msg in task_execution_agent.stream_chat(user_msg):
             messages.append(msg)
-        
+
         # Verify we got at least one message
         assert len(messages) > 0
         # The agent should respond with some message
@@ -163,13 +166,15 @@ class TestTaskExecutionAgent:
 
     @pytest.mark.asyncio
     async def test_stream_chat_task_execution_with_tools(
-        self, task_execution_agent: TaskExecutionAgent, sample_task_context: TaskExecutionContext,
-        mock_llm_client: MagicMock
+        self,
+        task_execution_agent: TaskExecutionAgent,
+        sample_task_context: TaskExecutionContext,
+        mock_llm_client: MagicMock,
     ) -> None:
         """Test that stream_chat properly yields tool messages during task execution."""
         # The agent uses get_tool_executor() internally, we don't need to mock it for this test
         # since we're mocking the LLM responses directly
-        
+
         # Mock the LLM response with tool calls
         mock_messages = [
             ToolCallMessage(
@@ -181,24 +186,24 @@ class TestTaskExecutionAgent:
             ),
             AgentMessage(content="Task completed", final=True),
         ]
-        
+
         async def mock_generate_stream(*args: Any, **kwargs: Any) -> Any:
             for msg in mock_messages:
                 yield msg
-        
+
         mock_llm_client.generate_stream_with_tools = mock_generate_stream
-        
+
         # Set the task context
         task_execution_agent.set_current_task(sample_task_context)
-        
+
         # Create a user message
         user_msg = UserMessage(content="Execute task")
-        
+
         # Collect all messages
         messages = []
         async for msg in task_execution_agent.stream_chat(user_msg):
             messages.append(msg)
-        
+
         # Verify message types
         assert any(isinstance(m, ToolCallMessage) for m in messages)
         assert any(isinstance(m, ToolResultMessage) for m in messages)
@@ -211,10 +216,10 @@ class TestTaskExecutionAgent:
         """Test that task prompts are properly substituted with parameter values."""
         # Set the task context
         task_execution_agent.set_current_task(sample_task_context)
-        
+
         # Build the task prompt
         prompt = task_execution_agent.build_task_prompt(sample_task_context)
-        
+
         # Verify the prompt contains the task info and values
         assert "Process File" in prompt  # task name
         assert "Read the file at {file_path}" in prompt  # original instructions

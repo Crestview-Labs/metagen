@@ -168,6 +168,7 @@ class TestTaskSubsystemIntegration:
         assert result.is_error is False
         # The execute_task tool returns task metadata as JSON
         import json
+
         result_data = json.loads(result.content)
         assert result_data["task_id"] == task_id
         assert result_data["task_name"] == "File Processor"

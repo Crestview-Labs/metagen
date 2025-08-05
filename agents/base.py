@@ -264,7 +264,7 @@ class BaseAgent(ABC):
             async for message in llm_stream:
                 # Set agent_id on all messages from LLM
                 message.agent_id = self.agent_id
-                
+
                 if isinstance(message, AgentMessage):
                     content_buffer += message.content
                     last_agent_message = message
