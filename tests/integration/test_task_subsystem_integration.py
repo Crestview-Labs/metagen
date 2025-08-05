@@ -6,14 +6,13 @@ through the various components working together.
 
 from pathlib import Path
 from typing import Any, AsyncGenerator, Optional
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from agents.memory import MemoryManager
 from common.models import Parameter, TaskDefinition
 from common.models.enums import ParameterType
-from common.types import ParameterValue, TaskExecutionContext, ToolCall, ToolCallResult
+from common.types import ToolCall, ToolCallResult
 from db.engine import DatabaseEngine
 from tools.core.task_tools import CreateTaskTool, ExecuteTaskTool, ListTasksTool
 from tools.registry import ToolExecutor
@@ -149,55 +148,9 @@ class TestTaskSubsystemIntegration:
 
         task_id = json.loads(create_result.content)["task_id"]
 
-        # Create a mock TaskExecutionAgent
-        mock_task_agent = MagicMock()
-        mock_task_agent.execute_task_fully = AsyncMock(
-            return_value=ToolCallResult(
-                tool_name="execute_task",
-                tool_call_id=f"task_{task_id}",
-                content="Task completed successfully",
-                is_error=False,
-                error=None,
-                error_type=None,
-                user_display=None,
-                metadata={"result": "File processed successfully"},
-            )
-        )
-
-        # Create interceptor function
-        async def task_interceptor(
-            tool_name: str, params: dict[str, Any]
-        ) -> Optional[ToolCallResult]:
-            if tool_name == "execute_task":
-                # Create context from params
-                task_config = await memory_manager.get_task(params["task_id"])
-                if not task_config:
-                    raise ValueError(f"Task not found: {params['task_id']}")
-
-                context = TaskExecutionContext(
-                    task_id=task_config.id,
-                    task_name=task_config.name,
-                    instructions=task_config.definition.instructions,
-                    input_values={
-                        k: ParameterValue(
-                            value=v,
-                            parameter_type=next(
-                                p.type for p in task_config.definition.input_schema if p.name == k
-                            ),
-                        )
-                        for k, v in params["input_values"].items()
-                    },
-                )
-
-                # Execute via agent
-                result = await mock_task_agent.execute_task_fully(context)
-                assert isinstance(result, ToolCallResult)
-                return result
-            return None
-
-        # Register tools and interceptor
+        # Register the execute_task tool without interceptor
+        # This will test the actual tool's behavior
         tool_executor.register_core_tool(task_tools["execute_task"])
-        tool_executor.register_interceptor("execute_task", task_interceptor)
 
         # Execute task through tool executor
         tool_call = ToolCall(
@@ -213,8 +166,13 @@ class TestTaskSubsystemIntegration:
 
         assert isinstance(result, ToolCallResult)
         assert result.is_error is False
-        assert "Task completed successfully" in result.content
-        mock_task_agent.execute_task_fully.assert_called_once()
+        # The execute_task tool returns task metadata as JSON
+        import json
+
+        result_data = json.loads(result.content)
+        assert result_data["task_id"] == task_id
+        assert result_data["task_name"] == "File Processor"
+        assert result_data["agent_id"] == "task_execution_agent"
 
     @pytest.mark.asyncio
     async def test_full_task_lifecycle(
@@ -312,7 +270,7 @@ class TestTaskSubsystemIntegration:
 
         # Create a test interceptor that simulates task execution
         async def test_interceptor(
-            tool_name: str, params: dict[str, Any]
+            tool_call_id: str, tool_name: str, params: dict[str, Any]
         ) -> Optional[ToolCallResult]:
             if tool_name == "execute_task":
                 # Verify we get the right parameters
@@ -350,7 +308,8 @@ class TestTaskSubsystemIntegration:
         assert isinstance(result, ToolCallResult)
         assert result.tool_name == "execute_task"
         assert not result.is_error
-        assert "Task executed successfully" in result.content
+        # The interceptor returns a custom message
+        assert "Task executed successfully: echoed Hello, World!" == result.content
         assert result.metadata["result"] == "Hello, World! (echoed)"
 
     @pytest.mark.asyncio

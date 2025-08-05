@@ -131,7 +131,7 @@ class TestToolExecutor:
 
         # Create an interceptor that handles the call
         async def blocking_interceptor(
-            tool_name: str, params: dict[str, Any]
+            tool_call_id: str, tool_name: str, params: dict[str, Any]
         ) -> Optional[ToolCallResult]:
             return ToolCallResult(
                 tool_name=tool_name,
@@ -163,7 +163,7 @@ class TestToolExecutor:
 
         # Create an interceptor that returns None (allows execution)
         async def passthrough_interceptor(
-            tool_name: str, params: dict[str, Any]
+            tool_call_id: str, tool_name: str, params: dict[str, Any]
         ) -> Optional[ToolCallResult]:
             # Could do logging, validation, etc. here
             return None
@@ -186,7 +186,7 @@ class TestToolExecutor:
 
         # Create an interceptor that raises an error
         async def failing_interceptor(
-            tool_name: str, params: dict[str, Any]
+            tool_call_id: str, tool_name: str, params: dict[str, Any]
         ) -> Optional[ToolCallResult]:
             raise RuntimeError("Interceptor failed!")
 
@@ -205,7 +205,9 @@ class TestToolExecutor:
         executor.register_core_tool(mock_tool)
 
         # Add interceptor
-        async def interceptor(tool_name: str, params: dict[str, Any]) -> Optional[ToolCallResult]:
+        async def interceptor(
+            tool_call_id: str, tool_name: str, params: dict[str, Any]
+        ) -> Optional[ToolCallResult]:
             return ToolCallResult(
                 tool_name=tool_name,
                 tool_call_id=None,  # Will be set by executor
@@ -326,7 +328,9 @@ class TestToolExecutor:
         executor.register_core_tool(mock_tool)
 
         # Interceptor that doesn't set tool_call_id
-        async def interceptor(tool_name: str, params: dict[str, Any]) -> Optional[ToolCallResult]:
+        async def interceptor(
+            tool_call_id: str, tool_name: str, params: dict[str, Any]
+        ) -> Optional[ToolCallResult]:
             return ToolCallResult(
                 tool_name=tool_name,
                 tool_call_id=None,  # Will be set by executor

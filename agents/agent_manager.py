@@ -277,16 +277,22 @@ class AgentManager:
 
         while True:
             try:
-                # Wait for task prompt from AgentManager (via tool interceptor)
-                task_prompt = await self.task_agent_input.get()
-                logger.info(f"TaskExecutionAgent received task: {task_prompt[:50]}...")
+                # Wait for task message from AgentManager (via tool interceptor)
+                task_message = await self.task_agent_input.get()
+
+                # Log the task content
+                if isinstance(task_message, Message):
+                    task_preview = getattr(task_message, "content", str(task_message))[:50]
+                else:
+                    task_preview = str(task_message)[:50]
+                logger.info(f"TaskExecutionAgent received task: {task_preview}...")
 
                 # Execute task and stream output back to unified queue
                 if self.task_agent is None:
                     logger.error("TaskExecutionAgent not initialized")
                     continue
 
-                async for msg in self.task_agent.stream_chat(task_prompt):
+                async for msg in self.task_agent.stream_chat(task_message):
                     self._log_message(msg, "🤖")
                     await self.unified_agent_output.put(msg)
 
@@ -340,25 +346,26 @@ class AgentManager:
                 # Forward message directly to CLI
                 await self.cli_output_queue.put(msg)
 
-                # Check for task completion
+                # Check for task completion via ToolResultMessage
                 if (
                     self.task_agent is not None
-                    and isinstance(msg, AgentMessage)
+                    and isinstance(msg, ToolResultMessage)
                     and msg.agent_id == self.task_agent.agent_id
-                    and msg.final
+                    and msg.tool_name == "execute_task"
                 ):
                     logger.debug(
-                        f"🎯 TaskExecutionAgent completed - FIFO queue has "
+                        f"🎯 TaskExecutionAgent completed with ToolResultMessage - FIFO queue has "
                         f"{len(self.pending_task_completions)} pending completions"
                     )
 
                     # Signal the next pending task completion (FIFO order)
                     if self.pending_task_completions:
-                        self.pending_task_results.append(msg.content)
+                        # Store the complete ToolCallResult, not just content string
+                        self.pending_task_results.append(msg.result)
                         completion_event = self.pending_task_completions.pop(0)
                         completion_event.set()
                         logger.debug(
-                            f"✅ Signaled completion event, "
+                            f"✅ Signaled completion event with complete result, "
                             f"{len(self.pending_task_completions)} remaining"
                         )
 
@@ -824,7 +831,7 @@ class AgentManager:
             ]
 
     async def _intercept_execute_task(
-        self, tool_name: str, parameters: dict[str, Any]
+        self, tool_call_id: str, tool_name: str, parameters: dict[str, Any]
     ) -> ToolCallResult:
         """
         Intercept execute_task calls using FIFO coordination with single TaskExecutionAgent.
@@ -857,7 +864,7 @@ class AgentManager:
             if not task_id:
                 return ToolCallResult(
                     tool_name=tool_name,
-                    tool_call_id="execute_task_missing_id",
+                    tool_call_id=tool_call_id,
                     content="Missing required parameter: task_id",
                     is_error=True,
                     error="Missing task_id",
@@ -870,7 +877,7 @@ class AgentManager:
             if self.memory_manager is None:
                 return ToolCallResult(
                     tool_name=tool_name,
-                    tool_call_id="execute_task_no_memory",
+                    tool_call_id=tool_call_id,
                     content="Memory manager not initialized",
                     is_error=True,
                     error="System not initialized",
@@ -884,7 +891,7 @@ class AgentManager:
             if not task:
                 return ToolCallResult(
                     tool_name=tool_name,
-                    tool_call_id="execute_task_not_found",
+                    tool_call_id=tool_call_id,
                     content=f"Task definition not found: {task_id}",
                     is_error=True,
                     error="Task not found",
@@ -901,12 +908,13 @@ class AgentManager:
                 if param:
                     typed_values[key] = ParameterValue(value=value, parameter_type=param.type)
 
-            # Create execution context
+            # Create execution context with tool_call_id
             context = TaskExecutionContext(
                 task_id=task_id,
                 task_name=task.name,
                 instructions=task.definition.instructions,
                 input_values=typed_values,
+                tool_call_id=tool_call_id,  # Pass the original tool_call_id
                 retry_count=0,
                 timeout_seconds=None,
                 allowed_tools=None,
@@ -916,7 +924,7 @@ class AgentManager:
             if self.task_agent is None:
                 return ToolCallResult(
                     tool_name=tool_name,
-                    tool_call_id="execute_task_no_agent",
+                    tool_call_id=tool_call_id,
                     content="Task agent not initialized",
                     is_error=True,
                     error="Task agent not available",
@@ -927,33 +935,50 @@ class AgentManager:
 
             self.task_agent.set_current_task(context)
 
-            # Build task prompt and send to TaskExecutionAgent
+            # Build task prompt and send to TaskExecutionAgent as UserMessage
             task_prompt = self.task_agent.build_task_prompt(context)
-            await self.task_agent_input.put(task_prompt)
+            task_message = UserMessage(content=task_prompt)
+            await self.task_agent_input.put(task_message)
 
             logger.info(f"Sent task '{task.name}' to TaskExecutionAgent, waiting for completion")
 
             # Wait for our turn in the FIFO queue (router will set this event)
             await completion_event.wait()
 
-            # Get result from FIFO queue (router puts results in same order)
+            # Get result from FIFO queue (router now puts ToolCallResult objects)
             if self.pending_task_results:
-                final_result = self.pending_task_results.pop(0)
+                task_result = self.pending_task_results.pop(0)
+
+                # Router should have put a ToolCallResult from ToolResultMessage
+                if isinstance(task_result, ToolCallResult):
+                    logger.info(f"Task execution completed: {task_result.user_display}")
+                    return task_result
+                else:
+                    # This shouldn't happen with the new design
+                    logger.error(f"Unexpected result type from router: {type(task_result)}")
+                    return ToolCallResult(
+                        tool_name=tool_name,
+                        tool_call_id=f"execute_task_{task_id}",
+                        content="Task completed but result format was unexpected",
+                        is_error=True,
+                        error="Invalid result format from task execution",
+                        error_type=ToolErrorType.EXECUTION_ERROR,
+                        user_display="Task execution error: Invalid result format",
+                        metadata={"task_id": task_id, "result_type": str(type(task_result))},
+                    )
             else:
-                final_result = "Task completed but no result captured"
-
-            logger.info(f"Task execution completed with result: {final_result[:100]}...")
-
-            return ToolCallResult(
-                tool_name=tool_name,
-                tool_call_id=f"execute_task_{task_id}",
-                content=final_result,
-                is_error=False,
-                error=None,
-                error_type=None,
-                user_display=f"Task completed: {final_result}",
-                metadata={"task_execution": "completed", "task_id": task_id},
-            )
+                # No result captured - this is an error
+                logger.error("Task completed but no result captured in FIFO queue")
+                return ToolCallResult(
+                    tool_name=tool_name,
+                    tool_call_id=tool_call_id,
+                    content="Task completed but no result captured",
+                    is_error=True,
+                    error="No result captured from task execution",
+                    error_type=ToolErrorType.EXECUTION_ERROR,
+                    user_display="Task execution completed but result was not captured",
+                    metadata={"task_id": task_id},
+                )
 
         except Exception as e:
             logger.error(f"Error in task execution: {e}", exc_info=True)
@@ -964,7 +989,7 @@ class AgentManager:
 
             return ToolCallResult(
                 tool_name=tool_name,
-                tool_call_id="execute_task_error",
+                tool_call_id=tool_call_id,
                 content=f"Task execution failed: {str(e)}",
                 is_error=True,
                 error=str(e),

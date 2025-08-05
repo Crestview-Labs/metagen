@@ -679,23 +679,10 @@ class TestToolApprovalEndToEnd:
                 logger.info(f"Creating approval response: {approval}")
                 logger.info("Sending approval through chat_stream...")
 
-                # Send approval through a separate coroutine while the main loop continues
-                async def send_approval() -> None:
-                    try:
-                        logger.info("Approval sender: Starting separate stream for approval")
-                        async for response in agent_manager.chat_stream(approval):
-                            logger.info(
-                                f"Approval sender: Got response from approval stream: "
-                                f"{response.type}"
-                            )
-                        logger.info("Approval sender: Approval stream completed")
-                    except Exception as e:
-                        logger.error(f"Approval sender: Error sending approval: {e}", exc_info=True)
-
-                # Start the approval task
-                asyncio.create_task(send_approval())
+                # Send approval directly
+                await agent_manager.handle_tool_approval_response(approval)
                 approval_sent = True
-                logger.info("Approval task started - continuing to receive messages...")
+                logger.info("Approval sent - continuing to receive messages...")
 
             # Check for tool execution messages after approval
             if approval_sent:

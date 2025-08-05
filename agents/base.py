@@ -260,18 +260,28 @@ class BaseAgent(ABC):
             tool_requests = None
 
             # Stream LLM response (now yields Message objects directly)
+            last_agent_message = None
             async for message in llm_stream:
+                # Set agent_id on all messages from LLM
+                message.agent_id = self.agent_id
+
                 if isinstance(message, AgentMessage):
                     content_buffer += message.content
-                    yield message  # Pass through directly
+                    last_agent_message = message
+                    # Don't yield yet - we might need to set final=True
+                    # yield message  # Now has correct agent_id
 
                 elif isinstance(message, ToolCallMessage):
+                    # If we had buffered agent message, yield it now (not final)
+                    if last_agent_message:
+                        yield last_agent_message
+                        last_agent_message = None
                     # Store tool calls for processing
                     tool_requests = message.tool_calls
-                    yield message  # Pass through to user
+                    yield message  # Now has correct agent_id
 
                 elif isinstance(message, UsageMessage):
-                    yield message  # Pass through directly
+                    yield message  # Now has correct agent_id
 
             # Track content
             if content_buffer:
@@ -280,7 +290,14 @@ class BaseAgent(ABC):
             # Check if tools were requested
             if not tool_requests and content_buffer:
                 # Got content but no tools, conversation complete
+                # Mark the last agent message as final before yielding
+                if last_agent_message:
+                    last_agent_message.final = True
+                    yield last_agent_message
                 break
+            elif last_agent_message:
+                # Had content but also tools - yield the non-final message
+                yield last_agent_message
             elif not tool_requests and not content_buffer:
                 # No content and no tools - this shouldn't happen
                 logger.error("LLM returned neither content nor tool requests")
