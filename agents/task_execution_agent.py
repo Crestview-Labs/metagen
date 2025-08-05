@@ -1,6 +1,6 @@
 """TaskExecutionAgent - Intelligent agent for executing tasks with general capabilities."""
 
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 from agents.base import BaseAgent
 from common.messages import (
@@ -10,7 +10,7 @@ from common.messages import (
     SystemMessage,
     ToolCallMessage,
     ToolErrorMessage,
-    UserMessage,
+    ToolResultMessage,
 )
 from common.types import TaskExecutionContext, ToolCallResult, ToolErrorType
 from tools.base import Tool
@@ -135,104 +135,81 @@ Input values provided:
 
         return context
 
-    async def execute_task_fully(self, context: TaskExecutionContext) -> ToolCallResult:
+    async def stream_chat(self, message: Message) -> AsyncIterator[Message]:
         """
-        Execute a task completely and return the final result as ToolCallResult.
-
-        This method is used by the stream multiplexing architecture to execute
-        tasks while allowing CLI to see intermediate progress via separate streams.
-
-        Args:
-            context: The task execution context
-
-        Returns:
-            ToolCallResult containing the task execution result
+        Override stream_chat to handle task execution and yield ToolResultMessage.
+        
+        This ensures that task execution results are properly communicated
+        to the router for FIFO coordination.
         """
-        # ToolCallResult already imported at the top
-
-        # Set current task
-        self.set_current_task(context)
-
-        try:
-            # Build and execute task
-            task_prompt = self.build_task_prompt(context)
-            final_response = ""
-            execution_metadata: dict[str, Any] = {"tool_calls": 0, "errors": 0, "stages": []}
-
-            # Stream through task execution and capture final result
-            async for message in self.stream_chat(UserMessage(content=task_prompt)):
-                # Handle different message types
-                if isinstance(message, AgentMessage):
-                    stage = "response"
-                    content = message.content
-                elif isinstance(message, ToolCallMessage):
-                    stage = "tool_call"
-                    content = ""
-                elif isinstance(message, (ToolErrorMessage, ErrorMessage)):
-                    stage = "error"
-                    content = (
-                        message.error
-                        if isinstance(message, (ToolErrorMessage, ErrorMessage))
-                        else ""
-                    )
-
-                # Track execution metadata
-                execution_metadata["stages"].append(stage)
-                if stage == "tool_call":
-                    execution_metadata["tool_calls"] += 1
-                elif stage in ["tool_error", "error"]:
-                    execution_metadata["errors"] += 1
-                elif stage == "response":
-                    # This is the final response from the agent
-                    final_response = content
-
-            # Task completed successfully
-
-            # Determine success based on execution
+        # Track execution metadata
+        final_response = ""
+        execution_metadata: dict[str, Any] = {"tool_calls": 0, "errors": 0, "stages": []}
+        
+        # Use parent's stream_chat for the actual execution
+        async for msg in super().stream_chat(message):
+            # Track different message types
+            if isinstance(msg, AgentMessage):
+                execution_metadata["stages"].append("response")
+                if msg.final:
+                    final_response = msg.content
+            elif isinstance(msg, ToolCallMessage):
+                execution_metadata["stages"].append("tool_call")
+                execution_metadata["tool_calls"] += 1
+            elif isinstance(msg, (ToolErrorMessage, ErrorMessage)):
+                execution_metadata["stages"].append("error")
+                execution_metadata["errors"] += 1
+            
+            # Yield the message as-is
+            yield msg
+        
+        # After all messages are done, yield a ToolResultMessage with the complete result
+        if self.current_task_context:
             success = execution_metadata["errors"] == 0 and final_response.strip()
-
+            
             if success:
-                return ToolCallResult(
+                result = ToolCallResult(
                     tool_name="execute_task",
-                    tool_call_id=f"task_{context.task_id}",
+                    # Use original tool_call_id
+                    tool_call_id=self.current_task_context.tool_call_id,
                     content=f"Task executed successfully. Result: {final_response}",
                     is_error=False,
                     error=None,
                     error_type=None,
-                    user_display=f"Task '{context.task_name}' completed successfully",
+                    user_display=(
+                        f"Task '{self.current_task_context.task_name}' completed successfully"
+                    ),
                     metadata={
-                        "task_id": context.task_id,
+                        "task_id": self.current_task_context.task_id,
                         "agent_id": self.agent_id,
                         "execution_stats": execution_metadata,
                         "result": final_response,
                     },
                 )
             else:
-                return ToolCallResult(
+                result = ToolCallResult(
                     tool_name="execute_task",
-                    tool_call_id=f"task_{context.task_id}",
+                    # Use original tool_call_id
+                    tool_call_id=self.current_task_context.tool_call_id,
                     content="Task execution failed or produced no result",
                     is_error=True,
                     error="Task execution failed",
                     error_type=ToolErrorType.EXECUTION_ERROR,
-                    user_display=f"Task '{context.task_name}' failed to complete",
+                    user_display=f"Task '{self.current_task_context.task_name}' failed to complete",
                     metadata={
-                        "task_id": context.task_id,
+                        "task_id": self.current_task_context.task_id,
                         "agent_id": self.agent_id,
                         "execution_stats": execution_metadata,
                     },
                 )
-
-        except Exception as e:
-            return ToolCallResult(
-                tool_name="execute_task",
-                tool_call_id=f"task_{context.task_id}",
-                content=f"Task execution error: {str(e)}",
-                is_error=True,
-                error=str(e),
-                error_type=ToolErrorType.EXECUTION_ERROR,
-                user_display=f"Error executing task '{context.task_name}': {str(e)}",
-                metadata={"task_id": context.task_id, "agent_id": self.agent_id, "error": str(e)},
+            
+            # Yield the complete task result as a ToolResultMessage
+            assert result.tool_call_id, "tool_call_id must not be None or empty"
+            yield ToolResultMessage(
+                agent_id=self.agent_id,  # Set agent_id properly
+                tool_id=result.tool_call_id,
+                tool_name=result.tool_name,
+                result=result,  # Pass the complete ToolCallResult object
             )
 
     def get_task_info(self) -> dict[str, Any]:

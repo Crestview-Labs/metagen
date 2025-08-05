@@ -22,7 +22,7 @@ class ToolExecutor:
         self.mcp_servers: list[MCPServer] = []
         # Tool interceptors: tool_name -> interceptor function
         self.interceptors: dict[
-            str, Callable[[str, dict[str, Any]], Awaitable[Optional[ToolCallResult]]]
+            str, Callable[[str, str, dict[str, Any]], Awaitable[Optional[ToolCallResult]]]
         ] = {}
 
     def register_core_tool(self, tool: BaseCoreTool) -> None:
@@ -38,14 +38,15 @@ class ToolExecutor:
     def register_interceptor(
         self,
         tool_name: str,
-        interceptor: Callable[[str, dict[str, Any]], Awaitable[Optional[ToolCallResult]]],
+        interceptor: Callable[[str, str, dict[str, Any]], Awaitable[Optional[ToolCallResult]]],
     ) -> None:
         """
         Register an interceptor for a specific tool.
 
         Args:
             tool_name: Name of the tool to intercept
-            interceptor: Async function that takes (tool_name, parameters) and returns:
+            interceptor: Async function that takes (tool_call_id, tool_name, parameters) and 
+                        returns:
                         - ToolCallResult if the call should be intercepted and handled
                         - None if the call should proceed normally
         """
@@ -69,8 +70,8 @@ class ToolExecutor:
             interceptor = self.interceptors[tool_name]
 
             try:
-                # Call the interceptor
-                result = await interceptor(tool_name, tool_args)
+                # Call the interceptor with tool_call_id
+                result = await interceptor(tool_call.id, tool_name, tool_args)
 
                 # If interceptor handled the call, return its result
                 if result is not None:
