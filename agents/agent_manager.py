@@ -596,7 +596,6 @@ class AgentManager:
 
             # Stream outputs from CLI output queue
             # Router task is already forwarding all agent outputs here
-            timeout_count = 0
             while True:
                 try:
                     # Get next message with timeout
@@ -614,15 +613,7 @@ class AgentManager:
                         break
 
                 except asyncio.TimeoutError:
-                    timeout_count += 1
-                    if timeout_count == 50:  # Log only after 5 seconds
-                        logger.debug("⏱️ Still waiting for responses after 5 seconds...")
-                    elif timeout_count == 100:  # Log after 10 seconds
-                        logger.warning("⚠️ Still waiting for responses after 10 seconds...")
-                    elif timeout_count == 200:  # Log after 20 seconds
-                        logger.error(
-                            "❌ Still waiting for responses after 20 seconds - possible deadlock"
-                        )
+                    # Normal behavior - just continue waiting
                     continue
 
         except Exception as e:
@@ -1018,7 +1009,7 @@ class AgentManager:
 
             return UIResponse(
                 type=ResponseType.SYSTEM,
-                content=f"Agent: {info['name']}\nModel: {model}\nTools: {len(tools)} available",
+                content=f"Agent: {info['agent_id']}\nModel: {model}\nTools: {len(tools)} available",
                 agent_id="METAGEN",
                 metadata={
                     "agent_info": info,

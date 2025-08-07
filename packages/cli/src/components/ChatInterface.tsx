@@ -71,9 +71,12 @@ export const ChatInterface: React.FC = () => {
     try {
       // Send the approval decision to the API
       await apiClient.sendToolDecision({
+        type: 'approval_response',
+        direction: 'user_to_agent',
         tool_id: pendingApproval.tool_id,
         decision: approved ? 'approved' : 'rejected',
         feedback: feedback,
+        agent_id: pendingApproval.agent_id || 'default',
       });
       
       // Clear the pending approval and feedback state

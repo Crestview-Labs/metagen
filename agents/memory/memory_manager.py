@@ -57,6 +57,11 @@ class MemoryManager:
         """Close storage connections."""
         await self._storage.close()
 
+    @property
+    def db_path(self) -> str:
+        """Get the database path."""
+        return str(self.db_engine.db_path)
+
     # Turn recording interface
     async def create_in_progress_turn(
         self,

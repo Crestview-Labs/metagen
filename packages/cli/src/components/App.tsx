@@ -188,7 +188,7 @@ export const App: React.FC = () => {
               <Text color="cyan">💡 {message.content}</Text>
             ) : message.type === 'error' ? (
               <Text color="red">❌ {message.content}</Text>
-            ) : message.type === 'tool_approval_request' ? (
+            ) : message.type === 'approval_request' ? (
               <Text color="yellow" bold>  ├─ {message.content}</Text>
             ) : message.type === 'tool_approved' ? (
               <Text color="green">  ├─ {message.content}</Text>

@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from agents.agent_manager import AgentManager
+from client.models import ModelID
 
 from ..models.system import SystemInfo, ToolInfo
 
@@ -42,7 +43,9 @@ async def get_system_info(request: Request) -> SystemInfo:
 
         # Extract information
         agent_info = response.metadata.get("agent_info", {}) if response.metadata else {}
-        model = response.metadata.get("model", "unknown") if response.metadata else "unknown"
+        model = response.metadata.get("model") if response.metadata else None
+        if not model:
+            model = ModelID.CLAUDE_OPUS_4.value  # Default model using enum
         tools_data = response.metadata.get("tools", []) if response.metadata else []
 
         # Convert tools to ToolInfo models
@@ -53,19 +56,17 @@ async def get_system_info(request: Request) -> SystemInfo:
             full_tools = await current_agent.get_available_tools()
             tools = [
                 ToolInfo(
-                    name=tool["name"],
-                    description=tool["description"],
-                    input_schema=tool["input_schema"],
+                    name=tool.name, description=tool.description, input_schema=tool.input_schema
                 )
                 for tool in full_tools
             ]
 
         assert manager.memory_manager is not None, "Memory manager must be initialized"
-        memory_path = str(manager.memory_manager.storage.db_path)  # type: ignore[attr-defined]
+        memory_path = manager.memory_manager.db_path
         assert memory_path is not None, "Memory path must not be None"
 
         system_info = SystemInfo(
-            agent_name=agent_info.get("name", manager.agent_name),
+            agent_name=agent_info.get("agent_id", manager.agent_name),
             model=model,
             tools=tools,
             tool_count=len(tools),
