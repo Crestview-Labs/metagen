@@ -109,8 +109,8 @@ systemCommand
       const authStatus = auth.authenticated ? '✅ Authenticated' : '⚠️  Not authenticated';
       console.log(`Auth: ${authColor(authStatus)}`);
       
-      if (auth.authenticated && auth.email) {
-        console.log(chalk.gray(`  User: ${auth.email}`));
+      if (auth.authenticated && auth.user_info?.email) {
+        console.log(chalk.gray(`  User: ${auth.user_info.email}`));
       }
       
     } catch (error) {

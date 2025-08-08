@@ -71,13 +71,14 @@ export const ChatInterface: React.FC = () => {
     try {
       // Send the approval decision to the API
       await apiClient.sendToolDecision({
-        type: 'approval_response',
-        direction: 'user_to_agent',
+        type: 'approval_response' as any,  // Type assertion needed due to enum mismatch
+        direction: 'user_to_agent' as any,
         tool_id: pendingApproval.tool_id,
-        decision: approved ? 'approved' : 'rejected',
+        decision: (approved ? 'approved' : 'rejected') as any,
         feedback: feedback,
         agent_id: pendingApproval.agent_id || 'default',
-      });
+        timestamp: new Date().toISOString()
+      } as any);
       
       // Clear the pending approval and feedback state
       setPendingApproval(null);
@@ -121,7 +122,7 @@ export const ChatInterface: React.FC = () => {
           try {
             const auth = await apiClient.getAuthStatus();
             if (auth.authenticated) {
-              addMessage('system', `✅ Authenticated${auth.email ? ` as ${auth.email}` : ''}`, 'system');
+              addMessage('system', `✅ Authenticated${auth.user_info?.email ? ` as ${auth.user_info.email}` : ''}`, 'system');
             } else {
               addMessage('system', '⚠️  Not authenticated. Use "/auth login" to authenticate.', 'error');
             }
@@ -212,7 +213,7 @@ export const ChatInterface: React.FC = () => {
             addMessage('agent', streamResponse.content, 'approval_request', streamResponse.metadata);
           }
         } else {
-          const messageType = streamResponse.type === 'text' ? 'agent' : streamResponse.type as Message['type'];
+          const messageType = streamResponse.type === 'chat' ? 'agent' : streamResponse.type as Message['type'];
           addMessage('agent', streamResponse.content, messageType, streamResponse.metadata);
         }
       }

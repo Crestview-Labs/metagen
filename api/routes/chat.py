@@ -73,14 +73,21 @@ async def chat_stream(request: Request, chat_request: ChatRequest) -> StreamingR
             # Stream responses from agent
             async for response in manager.chat_stream(user_message):
                 # Convert Message to JSON and yield
-                response_data = {
-                    "type": response.type.value,
-                    "content": getattr(response, "content", ""),
-                    "metadata": getattr(response, "metadata", {}),
-                    "timestamp": response.timestamp.isoformat() if response.timestamp else None,
-                }
+                # Each message type has specific fields we need to serialize
+                response_dict = response.to_dict()
 
-                yield f"data: {json.dumps(response_data)}\n\n"
+                # Ensure metadata field exists
+                if "metadata" not in response_dict:
+                    response_dict["metadata"] = {}
+
+                # Handle timestamp conversion - it might be a datetime or already a string
+                if "timestamp" in response_dict and response_dict["timestamp"]:
+                    timestamp = response_dict["timestamp"]
+                    if hasattr(timestamp, "isoformat"):
+                        response_dict["timestamp"] = timestamp.isoformat()
+                    # If it's already a string, leave it as is
+
+                yield f"data: {json.dumps(response_dict)}\n\n"
 
             # Send completion signal
             completion_data = {"type": "complete", "session_id": chat_request.session_id}

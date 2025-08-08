@@ -157,6 +157,12 @@ class AsyncGmailService:
                     .execute()
                 )
 
+                # Log the raw payload structure for debugging
+                import json
+
+                payload_json = json.dumps(message.get("payload", {}), indent=2)[:2000]
+                logger.info(f"Raw Gmail message payload structure: {payload_json}")
+
                 logger.debug("Extracting headers from message")
                 headers = {
                     header["name"]: header["value"]
@@ -195,28 +201,105 @@ class AsyncGmailService:
 
     def _extract_body(self, payload: dict[str, Any]) -> str:
         """Extract body from message payload"""
-        logger.debug("Extracting message body from payload")
+        logger.info("Extracting message body from payload")
+
+        # Debug: Log the payload structure
+        logger.info(f"Payload keys: {list(payload.keys())}")
+        if "mimeType" in payload:
+            logger.info(f"Payload mimeType: {payload['mimeType']}")
+        if "parts" in payload:
+            logger.info(f"Payload has {len(payload['parts'])} parts")
+            for i, part in enumerate(payload["parts"]):
+                has_data = bool(part.get("body", {}).get("data"))
+                logger.info(
+                    f"  Part {i}: mimeType={part.get('mimeType')}, "
+                    f"has_body={bool(part.get('body'))}, has_data={has_data}"
+                )
+        if "body" in payload:
+            logger.info(f"Payload has body: data_size={len(payload['body'].get('data', ''))}")
+
         body = ""
 
         try:
-            if "parts" in payload:
-                logger.debug(f"Message has {len(payload['parts'])} parts")
-                for idx, part in enumerate(payload["parts"]):
-                    logger.debug(f"Part {idx}: mimeType={part['mimeType']}")
-                    if part["mimeType"] == "text/plain":
-                        data = part["body"]["data"]
-                        body = base64.urlsafe_b64decode(data).decode("utf-8")
-                        logger.debug(f"Extracted text/plain body, length: {len(body)}")
-                        break
-            elif payload["body"].get("data"):
-                logger.debug("Message has single body part")
-                body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8")
-                logger.debug(f"Extracted body, length: {len(body)}")
-            else:
+            # Recursively search for text content
+            body = self._extract_body_recursive(payload)
+            if not body:
                 logger.debug("No body data found in message")
+                body = "[No message body found]"
+            else:
+                logger.debug(f"Extracted body, length: {len(body)}")
         except Exception as e:
             logger.error(f"Error extracting body: {str(e)}", exc_info=True)
             body = "[Error extracting message body]"
+
+        return body
+
+    def _extract_body_recursive(self, payload: dict[str, Any]) -> str:
+        """Recursively extract body from nested MIME parts"""
+        body = ""
+
+        # Check if this part has data directly
+        if payload.get("body", {}).get("data"):
+            try:
+                # Important: Gmail may have padding issues, add padding if needed
+                data = payload["body"]["data"]
+                # Add padding if needed (base64 needs to be multiple of 4)
+                missing_padding = len(data) % 4
+                if missing_padding:
+                    data += "=" * (4 - missing_padding)
+                body = base64.urlsafe_b64decode(data).decode("utf-8")
+                logger.info(f"Successfully decoded body data, length: {len(body)}")
+                return body
+            except Exception as e:
+                logger.info(f"Failed to decode body data: {str(e)}")
+
+        # Check for parts
+        if "parts" in payload:
+            # First, try to find text/plain
+            for part in payload["parts"]:
+                if part.get("mimeType") == "text/plain" and part.get("body", {}).get("data"):
+                    try:
+                        # Add padding if needed (base64 needs to be multiple of 4)
+                        data = part["body"]["data"]
+                        logger.info(
+                            f"Raw base64 data length: {len(data)}, first 100 chars: {data[:100]}"
+                        )
+                        missing_padding = len(data) % 4
+                        if missing_padding:
+                            data += "=" * (4 - missing_padding)
+                        body = base64.urlsafe_b64decode(data).decode("utf-8")
+                        content_preview = body[:200] if body else "[empty]"
+                        logger.info(
+                            f"Successfully decoded text/plain part, "
+                            f"length: {len(body)}, content: {content_preview}"
+                        )
+                        if body and body.strip():  # Check if body has actual content
+                            return body
+                    except Exception as e:
+                        logger.debug(f"Failed to decode text/plain part: {str(e)}")
+
+            # If no text/plain with content, try text/html
+            for part in payload["parts"]:
+                if part.get("mimeType") == "text/html" and part.get("body", {}).get("data"):
+                    try:
+                        # Add padding if needed (base64 needs to be multiple of 4)
+                        data = part["body"]["data"]
+                        missing_padding = len(data) % 4
+                        if missing_padding:
+                            data += "=" * (4 - missing_padding)
+                        body = base64.urlsafe_b64decode(data).decode("utf-8")
+                        if body and body.strip():  # Check for actual content
+                            logger.info(f"Successfully decoded text/html part, length: {len(body)}")
+                            return body
+                    except Exception as e:
+                        logger.debug(f"Failed to decode text/html part: {str(e)}")
+
+            # Recursively check nested parts (for multipart/alternative, multipart/mixed, etc.)
+            for part in payload["parts"]:
+                if "multipart" in part.get("mimeType", "").lower():
+                    nested_body = self._extract_body_recursive(part)
+                    if nested_body:
+                        return nested_body
 
         return body
 

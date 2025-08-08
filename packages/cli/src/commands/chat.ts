@@ -66,30 +66,43 @@ export const chatCommand = new Command('chat')
           
           // Format different response types
           switch (streamResponse.type) {
+            case 'chat':
+              // Main chat response content
+              console.log(streamResponse.content);
+              break;
             case 'thinking':
               console.log(chalk.yellow(`${streamResponse.content}`));
               break;
             case 'tool_call':
               console.log(chalk.magenta(`${streamResponse.content}`));
               break;
+            case 'tool_started':
+              console.log(chalk.blue(`▶️  ${streamResponse.content}`));
+              break;
             case 'tool_result':
               console.log(chalk.cyan(`${streamResponse.content}`));
+              break;
+            case 'tool_error':
+              console.log(chalk.red(`❌ Tool error: ${streamResponse.content}`));
               break;
             case 'approval_request':
               console.log(chalk.yellow.bold(`🔐 Tool requires approval: ${streamResponse.content}`));
               console.log(chalk.yellow('Note: Run in interactive mode to approve/reject tools'));
               break;
-            case 'tool_approved':
-              console.log(chalk.green(`✅ ${streamResponse.content}`));
+            case 'approval_response':
+              // Check decision in metadata
+              const decision = streamResponse.metadata?.decision;
+              if (decision === 'approved') {
+                console.log(chalk.green(`✅ Tool approved: ${streamResponse.content}`));
+              } else if (decision === 'rejected') {
+                console.log(chalk.red(`❌ Tool rejected: ${streamResponse.content}`));
+              }
               break;
-            case 'tool_rejected':
-              console.log(chalk.red(`❌ ${streamResponse.content}`));
+            case 'usage':
+              // Token usage - skip in normal output
               break;
             case 'error':
               console.log(chalk.red(`❌ ${streamResponse.content}`));
-              break;
-            case 'text':
-              console.log(streamResponse.content);
               break;
             default:
               console.log(streamResponse.content);

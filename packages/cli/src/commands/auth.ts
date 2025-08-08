@@ -18,11 +18,8 @@ authCommand
       
       if (status.authenticated) {
         console.log(chalk.green('✅ Authenticated'));
-        if (status.email) {
-          console.log(chalk.gray(`   User: ${status.email}`));
-        }
-        if (status.expires_at) {
-          console.log(chalk.gray(`   Expires: ${status.expires_at}`));
+        if (status.user_info?.email) {
+          console.log(chalk.gray(`   User: ${status.user_info.email}`));
         }
       } else {
         console.log(chalk.yellow('⚠️  Not authenticated'));
@@ -60,8 +57,8 @@ authCommand
             clearInterval(pollInterval);
             clearTimeout(timeoutId);
             console.log(chalk.green('\n✅ Authentication successful!'));
-            if (status.email) {
-              console.log(chalk.gray(`   Logged in as: ${status.email}`));
+            if (status.user_info?.email) {
+              console.log(chalk.gray(`   Logged in as: ${status.user_info.email}`));
             }
           }
         } catch {

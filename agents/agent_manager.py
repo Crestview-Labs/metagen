@@ -494,6 +494,7 @@ class AgentManager:
                 llm_config={"llm": self.llm, "api_key": None},
                 mcp_servers=self.mcp_servers_instances,
                 available_tools=self.enabled_tools,
+                max_iterations=50,  # Allow deeply nested tool calls and complex workflows
             )
             await self.meta_agent.initialize()
 

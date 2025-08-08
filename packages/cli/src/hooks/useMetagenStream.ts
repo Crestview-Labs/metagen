@@ -7,7 +7,7 @@
 import { useState, useRef, useCallback } from 'react';
 import { apiClient, ApprovalRequestMessage, ApprovalResponseMessage } from '@metagen/api-client';
 
-export type MessageType = 'user' | 'agent' | 'system' | 'error' | 'thinking' | 'tool_call' | 'tool_result' | 'processing' | 'approval_request' | 'tool_approved' | 'tool_rejected';
+export type MessageType = 'user' | 'agent' | 'system' | 'error' | 'chat' | 'thinking' | 'tool_call' | 'tool_started' | 'tool_result' | 'tool_error' | 'usage' | 'processing' | 'approval_request' | 'approval_response' | 'tool_approved' | 'tool_rejected';
 
 export interface StreamMessage {
   id: string;
@@ -35,7 +35,7 @@ export function useMetagenStream(): UseMetagenStreamReturn {
   const [messages, setMessages] = useState<StreamMessage[]>([]);
   const [isResponding, setIsResponding] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [showToolResults, setShowToolResults] = useState(false);
+  const [showToolResults, setShowToolResults] = useState(true);  // Default to true to show tool results
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequestMessage | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -71,7 +71,7 @@ export function useMetagenStream(): UseMetagenStreamReturn {
         
       case 'toggle-results':
         toggleToolResults();
-        addMessage('system', `🔍 Tool results display: ${showToolResults ? 'OFF' : 'ON'}`, 'system');
+        addMessage('system', `🔍 Tool results display: ${!showToolResults ? 'OFF' : 'ON'}`, 'system');
         break;
         
       case 'clear':
@@ -93,7 +93,7 @@ export function useMetagenStream(): UseMetagenStreamReturn {
           try {
             const auth = await apiClient.getAuthStatus();
             if (auth.authenticated) {
-              addMessage('system', `✅ Authenticated${auth.email ? ` as ${auth.email}` : ''}`, 'system');
+              addMessage('system', `✅ Authenticated${auth.user_info?.email ? ` as ${auth.user_info.email}` : ''}`, 'system');
             } else {
               addMessage('system', '⚠️  Not authenticated. Use "/auth login" to authenticate.', 'error');
             }
@@ -203,14 +203,14 @@ export function useMetagenStream(): UseMetagenStreamReturn {
           break;
         }
         
-        // Debug: Track responses to find missing 872-char email summary
-        if (streamResponse.type === 'text' && streamResponse.content?.length > 100) {
-          console.log('📝 Large text response:', streamResponse.content.length, 'chars');
+        // Debug: Track responses to find missing large responses
+        if (streamResponse.type === 'chat' && streamResponse.content?.length > 100) {
+          console.log('📝 Large chat response:', streamResponse.content.length, 'chars');
         }
         
         // Handle different response types
-        if (streamResponse.type === 'text') {
-          // Add response indicator when text response starts
+        if (streamResponse.type === 'chat') {
+          // Add response indicator when chat response starts
           if (!hasStartedResponse) {
             hasStartedResponse = true;
             // Add response indicator without clearing previous stages
@@ -243,16 +243,48 @@ export function useMetagenStream(): UseMetagenStreamReturn {
           addMessage('system', streamResponse.content, 'thinking', streamResponse.metadata);
         } else if (streamResponse.type === 'tool_call') {
           // Add tool call message (keep all previous stages)
-          addMessage('agent', streamResponse.content, 'tool_call', streamResponse.metadata);
+          // Format tool calls for display
+          let toolCallContent = streamResponse.content;
+          if (streamResponse.metadata?.tool_calls || streamResponse.tool_calls) {
+            const calls = streamResponse.metadata?.tool_calls || streamResponse.tool_calls;
+            toolCallContent = `🔧 Calling ${calls.length} tool${calls.length > 1 ? 's' : ''}: ${calls.map((tc: any) => tc.tool_name).join(', ')}`;
+          }
+          addMessage('agent', toolCallContent, 'tool_call', streamResponse.metadata);
+          
+          // Reset message accumulation after tool calls so the next chat message creates a new message
+          currentMessage = '';
+          messageId = null;
+          hasStartedResponse = false;
           
         } else if (streamResponse.type === 'tool_result') {
           // Show tool results if enabled
           if (showToolResults) {
-            const result = streamResponse.content;
-            addMessage('system', result, 'tool_result', streamResponse.metadata);
+            // ToolResultMessage has 'result' field, not 'content'
+            const result = (streamResponse as any).result || '';
+            const toolName = (streamResponse as any).tool_name || 'Unknown tool';
+            const formattedResult = `📊 ${toolName} result:\n${typeof result === 'string' ? result : JSON.stringify(result, null, 2)}`;
+            addMessage('system', formattedResult, 'tool_result', streamResponse.metadata);
           }
+        } else if (streamResponse.type === 'tool_started') {
+          // Add tool started message - ToolStartedMessage has tool_id and tool_name fields
+          const toolName = (streamResponse as any).tool_name || 'Unknown tool';
+          addMessage('system', `⚙️ Executing ${toolName}...`, 'processing', streamResponse.metadata);
+        } else if (streamResponse.type === 'tool_error') {
+          // Add tool error message - ToolErrorMessage has 'error' field, not 'content'
+          const error = (streamResponse as any).error || 'Unknown error';
+          const toolName = (streamResponse as any).tool_name || 'Unknown tool';
+          addMessage('system', `❌ ${toolName} error: ${error}`, 'error', streamResponse.metadata);
+        } else if (streamResponse.type === 'error') {
+          // Handle ErrorMessage - this is a final error from the agent
+          const errorContent = streamResponse.content || (streamResponse as any).error || 'Unknown error occurred';
+          addMessage('system', `❌ Error: ${errorContent}`, 'error', streamResponse.metadata);
+          // ErrorMessage is terminal - break the loop
+          break;
+        } else if (streamResponse.type === 'usage') {
+          // Token usage information - could display or ignore
+          // For now, we'll skip displaying usage info in the UI
         } else if ((streamResponse.type as string) === 'processing') {
-          // Add processing message (keep all previous stages)
+          // Legacy processing message (keep for backward compatibility)
           addMessage('system', streamResponse.content, 'processing', streamResponse.metadata);
         } else if (streamResponse.type === 'approval_request') {
           // Extract approval request from metadata
@@ -261,14 +293,17 @@ export function useMetagenStream(): UseMetagenStreamReturn {
             setPendingApproval(approvalRequest);
             addMessage('system', `🔐 Tool requires approval: ${streamResponse.content}`, 'approval_request', streamResponse.metadata);
           }
-        } else if (streamResponse.type === 'tool_approved') {
+        } else if (streamResponse.type === 'approval_response') {
+          // Handle approval response - check decision in metadata
           setPendingApproval(null);
-          addMessage('system', `✅ ${streamResponse.content}`, 'tool_approved', streamResponse.metadata);
-        } else if (streamResponse.type === 'tool_rejected') {
-          setPendingApproval(null);
-          const feedback = streamResponse.metadata?.feedback;
-          const message = feedback ? `${streamResponse.content} - Reason: ${feedback}` : streamResponse.content;
-          addMessage('system', `❌ ${message}`, 'tool_rejected', streamResponse.metadata);
+          const decision = streamResponse.metadata?.decision;
+          if (decision === 'approved') {
+            addMessage('system', `✅ Tool approved: ${streamResponse.content}`, 'tool_approved', streamResponse.metadata);
+          } else if (decision === 'rejected') {
+            const feedback = streamResponse.metadata?.feedback;
+            const message = feedback ? `${streamResponse.content} - Reason: ${feedback}` : streamResponse.content;
+            addMessage('system', `❌ Tool rejected: ${message}`, 'tool_rejected', streamResponse.metadata);
+          }
         } else {
           // Handle other message types
           const messageType = streamResponse.type as MessageType;
@@ -293,13 +328,14 @@ export function useMetagenStream(): UseMetagenStreamReturn {
 
     try {
       const decision: ApprovalResponseMessage = {
-        type: 'approval_response',
-        direction: 'user_to_agent',
+        type: 'approval_response' as any,  // Type assertion needed due to enum mismatch
+        direction: 'user_to_agent' as any,
         tool_id: pendingApproval.tool_id,
-        decision: approved ? 'approved' : 'rejected',
+        decision: (approved ? 'approved' : 'rejected') as any,
         feedback: feedback,
-        agent_id: pendingApproval.agent_id
-      };
+        agent_id: pendingApproval.agent_id,
+        timestamp: new Date().toISOString()
+      } as ApprovalResponseMessage;
 
       await apiClient.sendToolDecision(decision);
       
