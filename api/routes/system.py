@@ -36,6 +36,7 @@ async def get_system_info(request: Request) -> SystemInfo:
 
         # Get system info from AgentManager - now returns SystemInfo directly
         system_info = await manager.get_system_info()
+        assert isinstance(system_info, SystemInfo)  # Ensure correct type
 
         logger.info(f"📊 System info: {system_info.agent_name}, {system_info.tool_count} tools")
         return system_info

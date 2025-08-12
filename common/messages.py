@@ -265,9 +265,11 @@ def message_from_dict(data: dict) -> Message:
         ValueError: If message type is unknown
     """
     msg_type = data.get("type")
+    if msg_type is None:
+        raise ValueError("Message data missing 'type' field")
 
     # Map MessageType enum values to Message classes
-    type_map = {
+    type_map: dict[str, type[Message]] = {
         MessageType.AGENT.value: AgentMessage,
         MessageType.USER.value: UserMessage,
         MessageType.SYSTEM.value: SystemMessage,

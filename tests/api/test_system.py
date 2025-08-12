@@ -16,7 +16,7 @@ from api.server import app
 
 
 @pytest.fixture
-def client():
+def client() -> TestClient:
     """Create a test client using FastAPI's TestClient.
 
     This automatically handles the server lifecycle - no need to run a real server.
@@ -32,7 +32,7 @@ def client():
 class TestSystem:
     """Integration tests for system endpoints using FastAPI TestClient."""
 
-    def test_system_info_endpoint(self, client):
+    def test_system_info_endpoint(self, client: TestClient) -> None:
         """Test system info endpoint returns SystemInfo model."""
         response = client.get("/api/system/info")
 
@@ -57,7 +57,7 @@ class TestSystem:
             # Manager not initialized
             assert response.json()["detail"]
 
-    def test_health_check_endpoint(self, client):
+    def test_health_check_endpoint(self, client: TestClient) -> None:
         """Test health check endpoint."""
         response = client.get("/api/system/health")
 
@@ -72,7 +72,7 @@ class TestSystem:
             components = data["components"]
             assert isinstance(components, dict)
 
-    def test_tools_listing_endpoint(self, client):
+    def test_tools_listing_endpoint(self, client: TestClient) -> None:
         """Test tools listing endpoint returns ToolsResponse model."""
         response = client.get("/api/tools")
 
@@ -93,7 +93,7 @@ class TestSystem:
             # Manager or MetaAgent not initialized
             assert response.json()["detail"]
 
-    def test_google_tools_endpoint(self, client):
+    def test_google_tools_endpoint(self, client: TestClient) -> None:
         """Test Google tools endpoint."""
         response = client.get("/api/tools/google")
 
@@ -131,7 +131,7 @@ class TestSystem:
 class TestSystemModels:
     """Test system-related Pydantic models."""
 
-    def test_tool_info_model(self):
+    def test_tool_info_model(self) -> None:
         """Test ToolInfo model."""
         tool = ToolInfo(
             name="test_tool",
@@ -143,7 +143,7 @@ class TestSystemModels:
         assert tool.description == "A test tool"
         assert tool.input_schema["type"] == "object"
 
-    def test_tools_response_model(self):
+    def test_tools_response_model(self) -> None:
         """Test ToolsResponse model."""
         tool = ToolInfo(name="tool1", description="Tool 1", input_schema={})
 
@@ -153,7 +153,7 @@ class TestSystemModels:
         assert response.count == 1
         assert response.tools[0].name == "tool1"
 
-    def test_system_info_model(self):
+    def test_system_info_model(self) -> None:
         """Test SystemInfo model."""
         tool = ToolInfo(name="tool1", description="Tool 1", input_schema={})
 

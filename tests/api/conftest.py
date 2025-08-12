@@ -2,7 +2,7 @@
 
 import time
 from pathlib import Path
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator, Generator
 
 import httpx
 import pytest
@@ -16,7 +16,7 @@ if env_path.exists():
 
 
 @pytest.fixture(scope="session")
-def server_process():
+def server_process() -> Generator[None, None, None]:
     """Dummy fixture - server should be started manually."""
     # Just check that server is running
     for i in range(10):
@@ -33,7 +33,7 @@ def server_process():
 
 
 @pytest_asyncio.fixture
-async def client(server_process) -> AsyncGenerator[httpx.AsyncClient, None]:
+async def client(server_process: Any) -> AsyncGenerator[httpx.AsyncClient, None]:
     """Create an async HTTP client for testing against the real server."""
     async with httpx.AsyncClient(
         base_url="http://localhost:8080", timeout=httpx.Timeout(30.0, read=60.0)

@@ -16,7 +16,7 @@ from api.server import app
 
 
 @pytest.fixture
-def client():
+def client() -> TestClient:
     """Create a test client using FastAPI's TestClient.
 
     This automatically handles the server lifecycle - no need to run a real server.
@@ -32,7 +32,7 @@ def client():
 class TestChatStream:
     """Integration tests for streaming chat endpoint using FastAPI TestClient."""
 
-    def test_stream_endpoint_exists(self, client):
+    def test_stream_endpoint_exists(self, client: TestClient) -> None:
         """Test streaming chat endpoint exists and responds."""
         request = ChatRequest(message="Stream test", session_id="stream-123")
 
@@ -47,7 +47,7 @@ class TestChatStream:
             # Should return SSE content type
             assert "text/event-stream" in response.headers.get("content-type", "")
 
-    def test_stream_with_session_id(self, client):
+    def test_stream_with_session_id(self, client: TestClient) -> None:
         """Test streaming with explicit session_id."""
         request = ChatRequest(message="Hello with session!", session_id="test-session-456")
 
@@ -62,7 +62,7 @@ class TestChatStream:
             content_type = response.headers.get("content-type", "")
             assert "text/event-stream" in content_type
 
-    def test_stream_without_session_id(self, client):
+    def test_stream_without_session_id(self, client: TestClient) -> None:
         """Test streaming without session_id (should auto-generate)."""
         request = ChatRequest(message="Hello without session!")
 
@@ -76,7 +76,7 @@ class TestChatStream:
         if response.status_code == 200:
             assert "text/event-stream" in response.headers.get("content-type", "")
 
-    def test_stream_with_invalid_request(self, client):
+    def test_stream_with_invalid_request(self, client: TestClient) -> None:
         """Test streaming with invalid request data."""
         # Send invalid data (missing required 'message' field)
         response = client.post("/api/chat/stream", json={}, headers={"Accept": "text/event-stream"})

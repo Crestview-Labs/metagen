@@ -18,6 +18,7 @@ from common.messages import (
     ApprovalDecision,
     ApprovalRequestMessage,
     ApprovalResponseMessage,
+    Message,
     ToolResultMessage,
     message_from_dict,
 )
@@ -33,7 +34,7 @@ pytestmark = pytest.mark.skip(
 
 
 @pytest.mark.asyncio
-async def test_basic_chat_stream(client: httpx.AsyncClient):
+async def test_basic_chat_stream(client: httpx.AsyncClient) -> None:
     """Test basic streaming functionality."""
     request_data = {"message": "Hello, just say hi back", "session_id": "test-basic"}
 
@@ -56,7 +57,7 @@ async def test_basic_chat_stream(client: httpx.AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_tool_approval_flow(client: httpx.AsyncClient):
+async def test_tool_approval_flow(client: httpx.AsyncClient) -> None:
     """Test tool approval workflow with real server."""
 
     # Request that triggers tool use requiring approval
@@ -68,7 +69,7 @@ async def test_tool_approval_flow(client: httpx.AsyncClient):
     approval_request = None
     messages_received = []
 
-    async def process_stream():
+    async def process_stream() -> None:
         """Process the stream and collect messages."""
         nonlocal approval_request
         async with client.stream(
@@ -90,7 +91,7 @@ async def test_tool_approval_flow(client: httpx.AsyncClient):
                         # CRITICAL: Wait for final message before ending
                         break
 
-    async def send_approval():
+    async def send_approval() -> None:
         """Send approval once we detect the request."""
         # Wait for approval request to be available
         for _ in range(50):  # 5 second timeout
@@ -129,7 +130,7 @@ async def test_tool_approval_flow(client: httpx.AsyncClient):
     "use dedicated endpoint"
 )
 @pytest.mark.asyncio
-async def test_approval_via_chat_message(client: httpx.AsyncClient):
+async def test_approval_via_chat_message(client: httpx.AsyncClient) -> None:
     """Test sending approval through chat stream instead of separate endpoint.
 
     NOTE: This test is skipped because the current implementation treats
@@ -146,7 +147,7 @@ async def test_approval_via_chat_message(client: httpx.AsyncClient):
     approval_request = None
     messages_received = []
 
-    async def process_first_stream():
+    async def process_first_stream() -> None:
         """Process the first stream and collect messages."""
         nonlocal approval_request
         async with client.stream(
@@ -165,7 +166,7 @@ async def test_approval_via_chat_message(client: httpx.AsyncClient):
                     elif isinstance(msg, AgentMessage) and msg.final:
                         break
 
-    async def send_approval():
+    async def send_approval() -> None:
         """Send approval once we detect the request."""
         # Wait for approval request to be available
         for _ in range(50):  # 5 second timeout
@@ -217,10 +218,10 @@ async def test_approval_via_chat_message(client: httpx.AsyncClient):
 
 @pytest.mark.skip(reason="Approval system is single-threaded, concurrent requests not supported")
 @pytest.mark.asyncio
-async def test_concurrent_streams(client: httpx.AsyncClient):
+async def test_concurrent_streams(client: httpx.AsyncClient) -> None:
     """Test multiple concurrent streaming connections."""
 
-    async def stream_request(session_id: str) -> list:
+    async def stream_request(session_id: str) -> list[Message]:
         request_data = {"message": f"Hello from session {session_id}", "session_id": session_id}
 
         messages = []

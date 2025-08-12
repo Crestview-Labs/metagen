@@ -108,7 +108,7 @@ def create_app() -> FastAPI:
 
     # Add version header middleware
     @app.middleware("http")
-    async def add_version_header(request: Request, call_next):
+    async def add_version_header(request: Request, call_next: Any) -> Any:
         """Add API version to all responses."""
         response = await call_next(request)
         response.headers["X-API-Version"] = API_VERSION

@@ -215,7 +215,7 @@ async def get_final_agent_response(messages: list[Message]) -> Optional[AgentMes
     """
     agent_messages = extract_messages_by_type(messages, AgentMessage)
     for msg in reversed(agent_messages):
-        if msg.final:
+        if isinstance(msg, AgentMessage) and msg.final:
             return msg
     return None
 

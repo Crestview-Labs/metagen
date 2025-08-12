@@ -16,7 +16,7 @@ from api.server import app
 
 
 @pytest.fixture
-def client():
+def client() -> TestClient:
     """Create a test client using FastAPI's TestClient.
 
     This automatically handles the server lifecycle - no need to run a real server.
@@ -32,7 +32,7 @@ def client():
 class TestAuth:
     """Integration tests for auth endpoints using FastAPI TestClient."""
 
-    def test_auth_status_endpoint(self, client):
+    def test_auth_status_endpoint(self, client: TestClient) -> None:
         """Test auth status endpoint returns AuthStatus model."""
         response = client.get("/api/auth/status")
 
@@ -47,7 +47,7 @@ class TestAuth:
         assert isinstance(status.services, list)
         assert status.user_info is None or isinstance(status.user_info, dict)
 
-    def test_auth_login_endpoint(self, client):
+    def test_auth_login_endpoint(self, client: TestClient) -> None:
         """Test auth login endpoint with AuthLoginRequest."""
         request = AuthLoginRequest(force=False)
 
@@ -67,7 +67,7 @@ class TestAuth:
         if auth_response.status:
             assert isinstance(auth_response.status.authenticated, bool)
 
-    def test_auth_login_force(self, client):
+    def test_auth_login_force(self, client: TestClient) -> None:
         """Test auth login with force=True."""
         request = AuthLoginRequest(force=True)
 
@@ -78,7 +78,7 @@ class TestAuth:
         auth_response = AuthResponse(**response.json())
         assert isinstance(auth_response.success, bool)
 
-    def test_auth_logout_endpoint(self, client):
+    def test_auth_logout_endpoint(self, client: TestClient) -> None:
         """Test auth logout endpoint."""
         response = client.post("/api/auth/logout")
 
@@ -94,7 +94,7 @@ class TestAuth:
             status = AuthStatus(**data["status"])
             assert status.authenticated is False
 
-    def test_auth_callback_endpoint(self, client):
+    def test_auth_callback_endpoint(self, client: TestClient) -> None:
         """Test auth callback endpoint structure."""
         # Callback requires URL and state parameters
         response = client.get("/api/auth/callback?url=test&state=test")
@@ -115,7 +115,7 @@ class TestAuth:
 class TestAuthModels:
     """Test auth-related Pydantic models."""
 
-    def test_auth_status_model(self):
+    def test_auth_status_model(self) -> None:
         """Test AuthStatus model."""
         status = AuthStatus(
             authenticated=True,
@@ -127,9 +127,10 @@ class TestAuthModels:
         assert status.authenticated is True
         assert status.provider == "google"
         assert len(status.services) == 2
+        assert status.user_info is not None
         assert status.user_info["email"] == "test@example.com"
 
-    def test_auth_status_unauthenticated(self):
+    def test_auth_status_unauthenticated(self) -> None:
         """Test AuthStatus model for unauthenticated state."""
         status = AuthStatus(authenticated=False, provider=None, services=[], user_info=None)
 
@@ -138,7 +139,7 @@ class TestAuthModels:
         assert len(status.services) == 0
         assert status.user_info is None
 
-    def test_auth_login_request_model(self):
+    def test_auth_login_request_model(self) -> None:
         """Test AuthLoginRequest model."""
         request = AuthLoginRequest(force=True)
         assert request.force is True
@@ -146,7 +147,7 @@ class TestAuthModels:
         request_default = AuthLoginRequest()
         assert request_default.force is False
 
-    def test_auth_response_model(self):
+    def test_auth_response_model(self) -> None:
         """Test AuthResponse model."""
         status = AuthStatus(authenticated=True, services=["gmail"], provider="google")
 
@@ -160,9 +161,10 @@ class TestAuthModels:
         assert response.success is True
         assert response.auth_url == "https://oauth.example.com/authorize"
         assert response.message == "Login successful"
+        assert response.status is not None
         assert response.status.authenticated is True
 
-    def test_auth_response_optional_fields(self):
+    def test_auth_response_optional_fields(self) -> None:
         """Test AuthResponse with optional fields."""
         response = AuthResponse(success=False)
 

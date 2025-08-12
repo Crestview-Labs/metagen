@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-def update_version(new_version: str):
+def update_version(new_version: str) -> None:
     """Update version in all relevant files"""
     root = Path(__file__).parent.parent
 
