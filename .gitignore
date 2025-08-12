@@ -64,6 +64,9 @@ bundle/
 *.log
 api/ts/dist/
 api/ts/lib/
+api/ts/**/*.js
+api/ts/**/*.d.ts
+!api/ts/jest.config.js
 
 # Swift
 api/swift/.build/

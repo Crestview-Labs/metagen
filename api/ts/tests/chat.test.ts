@@ -1,6 +1,6 @@
 // Comprehensive tests for chat API - both mock and real
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { MetagenAPI } from '../src/api';
+import { MetagenAPI } from '../src/api.js';
 import { 
   ChatRequest, 
   ChatResponse, 
@@ -8,8 +8,8 @@ import {
   ToolDecisionRequest,
   PendingToolsResponse,
   SSEMessage 
-} from '../src/types';
-import { APIError, StreamError } from '../src/errors';
+} from '../src/types.js';
+import { APIError, StreamError } from '../src/errors.js';
 
 // ============================================================================
 // MOCK TESTS
@@ -383,7 +383,7 @@ describe('Chat API - Integration', () => {
 
       const responses = await Promise.all(requests);
 
-      responses.forEach(response => {
+      responses.forEach((response: any) => {
         expect(response.success).toBe(true);
         expect(response.responses.length).toBeGreaterThan(0);
       });
@@ -408,7 +408,7 @@ describe('Chat API - Integration', () => {
       
       // Check if response mentions the name (context working)
       const responseText = response2.responses
-        .map(r => r.content)
+        .map((r: any) => r.content)
         .join(' ');
       // May or may not contain the name depending on context handling
     }, 30000);

@@ -1,7 +1,7 @@
 // Auto-generated SSE/streaming utilities - DO NOT EDIT
 
-import { SSEMessage } from './types';
-import { StreamError } from './errors';
+import { SSEMessage } from './types.js';
+import { StreamError } from './errors.js';
 
 export interface StreamOptions {
   signal?: AbortSignal;

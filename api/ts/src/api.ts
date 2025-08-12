@@ -1,9 +1,9 @@
 // Auto-generated API client - DO NOT EDIT
 
-import { API_VERSION } from './version';
-import * as types from './types';
-import { APIError, NetworkError } from './errors';
-import { parseSSEStream, StreamOptions } from './streaming';
+import { API_VERSION } from './version.js';
+import * as types from './types.js';
+import { APIError, NetworkError } from './errors.js';
+import { parseSSEStream, StreamOptions } from './streaming.js';
 
 export class MetagenAPI {
   constructor(private baseURL: string = 'http://localhost:8000') {}

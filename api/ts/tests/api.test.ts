@@ -1,7 +1,7 @@
 // Basic API client tests
 import { describe, it, expect } from 'vitest';
-import { MetagenAPI } from '../src/api';
-import { API_VERSION, BUILD_VERSION } from '../src/version';
+import { MetagenAPI } from '../src/api.js';
+import { API_VERSION, BUILD_VERSION } from '../src/version.js';
 
 describe('MetagenAPI', () => {
   it('should create an instance with default URL', () => {
