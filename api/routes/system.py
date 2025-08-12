@@ -6,9 +6,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from agents.agent_manager import AgentManager
-from client.models import ModelID
 
-from ..models.system import SystemInfo, ToolInfo
+from ..models.system import SystemInfo
 
 logger = logging.getLogger(__name__)
 
@@ -35,44 +34,8 @@ async def get_system_info(request: Request) -> SystemInfo:
 
         manager = get_manager(request)
 
-        # Get system info from AgentManager
-        response = await manager.get_system_info()
-
-        if response.type.value == "error":
-            raise HTTPException(status_code=500, detail=response.content)
-
-        # Extract information
-        agent_info = response.metadata.get("agent_info", {}) if response.metadata else {}
-        model = response.metadata.get("model") if response.metadata else None
-        if not model:
-            model = ModelID.CLAUDE_OPUS_4.value  # Default model using enum
-        tools_data = response.metadata.get("tools", []) if response.metadata else []
-
-        # Convert tools to ToolInfo models
-        tools = []
-        if tools_data:
-            # Get full tool info from current agent
-            current_agent = manager._get_current_agent()
-            full_tools = await current_agent.get_available_tools()
-            tools = [
-                ToolInfo(
-                    name=tool.name, description=tool.description, input_schema=tool.input_schema
-                )
-                for tool in full_tools
-            ]
-
-        assert manager.memory_manager is not None, "Memory manager must be initialized"
-        memory_path = manager.memory_manager.db_path
-        assert memory_path is not None, "Memory path must not be None"
-
-        system_info = SystemInfo(
-            agent_name=agent_info.get("agent_id", manager.agent_name),
-            model=model,
-            tools=tools,
-            tool_count=len(tools),
-            memory_path=memory_path,
-            initialized=manager._initialized,
-        )
+        # Get system info from AgentManager - now returns SystemInfo directly
+        system_info = await manager.get_system_info()
 
         logger.info(f"📊 System info: {system_info.agent_name}, {system_info.tool_count} tools")
         return system_info

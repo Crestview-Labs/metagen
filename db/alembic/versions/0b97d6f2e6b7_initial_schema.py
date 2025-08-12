@@ -78,7 +78,7 @@ def upgrade() -> None:
         sa.Column("agent_metadata", sa.JSON(), nullable=True),
         sa.Column(
             "status",
-            sa.Enum("IN_PROGRESS", "COMPLETED", "ERROR", "PARTIAL", "ABANDONED", name="turnstatus"),
+            sa.Enum("in_progress", "completed", "error", "partial", "abandoned", name="turnstatus"),
             nullable=False,
         ),
         sa.Column("error_details", sa.JSON(), nullable=True),

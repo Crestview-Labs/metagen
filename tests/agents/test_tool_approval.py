@@ -695,7 +695,7 @@ class TestToolApprovalEndToEnd:
                     logger.info(
                         f"✅ Tool result received: {getattr(response, 'result', 'N/A')[:100]}"
                     )
-                elif response.type == MessageType.CHAT:
+                elif response.type == MessageType.AGENT:
                     if isinstance(response, AgentMessage):
                         logger.info(f"✅ Agent response after tool: {response.content[:100]}")
                 elif response.type == MessageType.THINKING:

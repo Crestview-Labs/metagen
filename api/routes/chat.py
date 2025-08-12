@@ -3,15 +3,15 @@
 import asyncio
 import json
 import logging
-from typing import Any, AsyncGenerator
+from typing import AsyncGenerator
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from agents.agent_manager import AgentManager, UIResponse
-from common.messages import ApprovalDecision, ApprovalResponseMessage, UserMessage
+from agents.agent_manager import AgentManager
+from common.messages import ApprovalResponseMessage, UserMessage
 
-from ..models.chat import ChatRequest, ChatResponse, UIResponseModel
+from ..models.chat import ApprovalResponse, ChatRequest
 
 logger = logging.getLogger(__name__)
 
@@ -24,54 +24,64 @@ def get_manager(request: Request) -> AgentManager:
         raise HTTPException(status_code=503, detail="AgentManager not initialized")
 
     manager = request.app.state.manager
+    if manager is None:
+        raise HTTPException(status_code=503, detail="AgentManager not initialized")
+
     if not manager._initialized:
         raise HTTPException(status_code=503, detail="AgentManager not ready")
 
     return manager  # type: ignore[no-any-return]
 
 
-@chat_router.post("/chat", response_model=ChatResponse)
-async def chat(request: Request, chat_request: ChatRequest) -> ChatResponse:
-    """Send a message to the agent and get response."""
+@chat_router.post("/chat/approval-response")
+async def handle_approval_response(
+    request: Request, approval: ApprovalResponseMessage
+) -> ApprovalResponse:
+    """Handle tool approval response."""
+    logger.info(f"🔧 Received approval response for tool {approval.tool_id}: {approval.decision}")
+
+    manager = get_manager(request)
+
     try:
-        logger.info(f"💬 Chat request: {chat_request.message[:100]}...")
+        # Forward the approval to the manager
+        await manager.handle_tool_approval_response(approval)
 
-        _ = get_manager(request)  # TODO: Use manager when chat method is implemented
-
-        # Send message to agent
-        # TODO: Fix AgentManager.chat method - it doesn't exist
-        ui_responses: list[UIResponse] = []
-
-        # Convert UIResponse objects to Pydantic models
-        response_models = [UIResponseModel.from_ui_response(response) for response in ui_responses]
-
-        logger.info(f"✅ Chat completed with {len(response_models)} responses")
-
-        return ChatResponse(
-            responses=response_models, session_id=chat_request.session_id, success=True
+        return ApprovalResponse(
+            tool_id=approval.tool_id,
+            decision=approval.decision,
+            message="Approval processed successfully",
         )
-
     except Exception as e:
-        logger.error(f"❌ Chat error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Chat processing failed: {str(e)}")
+        logger.error(f"❌ Error handling approval response: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to process approval: {str(e)}")
 
 
 @chat_router.post("/chat/stream")
 async def chat_stream(request: Request, chat_request: ChatRequest) -> StreamingResponse:
     """Stream chat responses as they are generated."""
+    logger.info(f"[API ENDPOINT] /chat/stream called with {chat_request}")
 
     async def generate_stream() -> AsyncGenerator[str, None]:
         try:
-            logger.info(f"🌊 Stream chat request: {chat_request.message[:100]}...")
-            logger.debug(f"🔍 Full chat request: {chat_request}")
+            # Convert to Message object
+            message = chat_request.to_message()
+
+            # Get message preview for logging
+            if isinstance(message, UserMessage):
+                msg_preview = message.content[:100]
+            elif isinstance(message, ApprovalResponseMessage):
+                msg_preview = f"Approval: {message.decision} for {message.tool_id}"
+            else:
+                msg_preview = str(message)[:100]
+
+            logger.info(f"Stream chat request: {msg_preview}...")
 
             manager = get_manager(request)
 
-            # Create structured message
-            user_message = UserMessage(content=chat_request.message)
-
             # Stream responses from agent
-            async for response in manager.chat_stream(user_message):
+            message_count = 0
+            async for response in manager.chat_stream(message):
+                message_count += 1
                 # Convert Message to JSON and yield
                 # Each message type has specific fields we need to serialize
                 response_dict = response.to_dict()
@@ -89,9 +99,7 @@ async def chat_stream(request: Request, chat_request: ChatRequest) -> StreamingR
 
                 yield f"data: {json.dumps(response_dict)}\n\n"
 
-            # Send completion signal
-            completion_data = {"type": "complete", "session_id": chat_request.session_id}
-            yield f"data: {json.dumps(completion_data)}\n\n"
+                # No need for separate completion signal - AgentMessage.final indicates completion
 
         except asyncio.CancelledError:
             # Client disconnected - this is normal behavior
@@ -99,13 +107,11 @@ async def chat_stream(request: Request, chat_request: ChatRequest) -> StreamingR
             raise  # Re-raise to properly clean up the connection
         except Exception as e:
             logger.error(f"❌ Stream chat error: {str(e)}", exc_info=True)
-            error_response: dict[str, Any] = {
-                "type": "error",
-                "content": f"Stream error: {str(e)}",
-                "metadata": {},
-                "timestamp": None,
-            }
-            yield f"data: {json.dumps(error_response)}\n\n"
+            # Use proper ErrorMessage
+            from common.messages import ErrorMessage
+
+            error_msg = ErrorMessage(error=f"Stream error: {str(e)}", agent_id="SYSTEM")
+            yield f"data: {json.dumps(error_msg.to_dict())}\n\n"
         finally:
             logger.info(f"🏁 Stream completed for session: {chat_request.session_id}")
 
@@ -118,97 +124,3 @@ async def chat_stream(request: Request, chat_request: ChatRequest) -> StreamingR
             "Content-Type": "text/event-stream",
         },
     )
-
-
-@chat_router.post("/tool-decision")
-async def tool_decision(request: Request, decision_data: dict[str, Any]) -> dict[str, Any]:
-    """Handle tool approval/rejection decision from UI/CLI.
-
-    Expected payload:
-    {
-        "tool_id": "uuid",
-        "decision": "approved" | "rejected",
-        "feedback": "optional feedback if rejected",
-        "approved_by": "user_id or 'user'"
-    }
-    """
-    try:
-        logger.info(f"🔨 Tool decision received: {decision_data}")
-
-        # Validate required fields
-        if "tool_id" not in decision_data or "decision" not in decision_data:
-            raise HTTPException(
-                status_code=400, detail="Missing required fields: tool_id and decision"
-            )
-
-        # Create ApprovalResponseMessage
-        try:
-            # Extract agent_id from decision_data or default to "METAGEN"
-            agent_id = decision_data.get("agent_id", "METAGEN")
-
-            approval_response = ApprovalResponseMessage(
-                tool_id=decision_data["tool_id"],
-                decision=ApprovalDecision(decision_data["decision"]),
-                feedback=decision_data.get("feedback"),
-                agent_id=agent_id,
-            )
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Invalid decision value: {decision_data['decision']}. "
-                    "Must be 'approved' or 'rejected'"
-                ),
-            )
-
-        # Get manager and send approval response
-        manager = get_manager(request)
-        await manager.handle_tool_approval_response(approval_response)
-
-        logger.info(f"✅ Tool decision processed for {approval_response.tool_id}")
-
-        return {
-            "success": True,
-            "tool_id": approval_response.tool_id,
-            "decision": approval_response.decision.value,
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Tool decision error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Tool decision processing failed: {str(e)}")
-
-
-@chat_router.get("/pending-tools")
-async def get_pending_tools(request: Request) -> dict[str, Any]:
-    """Get list of tools pending approval."""
-    try:
-        manager = get_manager(request)
-
-        # Get pending approvals from memory manager
-        if not hasattr(manager, "memory_manager") or not manager.memory_manager:
-            return {"success": True, "pending_tools": []}
-
-        pending = await manager.memory_manager.get_pending_approvals()
-
-        # Convert to API response format
-        pending_list = [
-            {
-                "tool_id": tool.id,
-                "tool_name": tool.tool_name,
-                "tool_args": tool.tool_args,
-                "agent_id": tool.agent_id,
-                "created_at": tool.created_at.isoformat() if tool.created_at else None,
-                "requires_approval": tool.requires_approval,
-            }
-            for tool in pending
-        ]
-
-        logger.info(f"📋 Found {len(pending_list)} pending tools")
-
-        return {"success": True, "pending_tools": pending_list, "count": len(pending_list)}
-
-    except Exception as e:
-        logger.error(f"❌ Get pending tools error: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to get pending tools: {str(e)}")

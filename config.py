@@ -8,11 +8,16 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).parent
 
 # Database configuration
-DB_DIR = PROJECT_ROOT / "db"
-DB_PATH = DB_DIR / "metagen.db"
+# Allow overriding via environment variable
+if "METAGEN_DB_PATH" in os.environ:
+    DB_PATH = Path(os.environ["METAGEN_DB_PATH"])
+    DB_DIR = DB_PATH.parent
+else:
+    DB_DIR = PROJECT_ROOT / "db"
+    DB_PATH = DB_DIR / "metagen.db"
 
 # Ensure db directory exists
-DB_DIR.mkdir(exist_ok=True)
+DB_DIR.mkdir(parents=True, exist_ok=True)
 
 # Database URL for SQLAlchemy/Alembic
 DATABASE_URL = f"sqlite:///{DB_PATH}"

@@ -11,19 +11,14 @@ from pydantic import BaseModel, Field
 DEFAULT_AGENT_ID = "METAGEN"  # Default agent ID for MetaAgent
 
 
-class Direction(str, Enum):
-    """Message direction."""
-
-    USER_TO_AGENT = "user_to_agent"
-    AGENT_TO_USER = "agent_to_user"
-
-
 class MessageType(str, Enum):
     """Types of messages in the system."""
 
     # Chat/content
-    CHAT = "chat"
-    THINKING = "thinking"
+    USER = "user"  # User message
+    AGENT = "agent"  # Agent response
+    SYSTEM = "system"  # System message
+    THINKING = "thinking"  # Agent thinking/reasoning
 
     # Tool flow
     TOOL_CALL = "tool_call"  # LLM wants to call tools (contains full details)
@@ -42,7 +37,6 @@ class Message(BaseModel):
     """Base message class for all communication."""
 
     type: MessageType
-    direction: Direction
     timestamp: datetime = Field(default_factory=datetime.now)
     agent_id: str = DEFAULT_AGENT_ID  # TODO: This should be set properly by each agent
     # TODO: Consider adding task_id as well for task context tracking
@@ -65,36 +59,34 @@ class ToolCallRequest(BaseModel):
 
 # Chat messages
 class ChatMessage(Message):
-    """Chat content in either direction."""
+    """Base class for chat content messages."""
 
-    type: MessageType = MessageType.CHAT
     content: str
 
 
 class UserMessage(ChatMessage):
     """User chat message."""
 
-    direction: Direction = Direction.USER_TO_AGENT
+    type: MessageType = MessageType.USER
 
 
 class AgentMessage(ChatMessage):
     """Agent chat message."""
 
-    direction: Direction = Direction.AGENT_TO_USER
+    type: MessageType = MessageType.AGENT
     final: bool = False  # Indicates if this is the final message in a response
 
 
 class SystemMessage(ChatMessage):
     """System message for agent context."""
 
-    direction: Direction = Direction.AGENT_TO_USER
+    type: MessageType = MessageType.SYSTEM
 
 
 class ThinkingMessage(Message):
     """Agent thinking indicator."""
 
     type: MessageType = MessageType.THINKING
-    direction: Direction = Direction.AGENT_TO_USER
     content: str
 
 
@@ -103,7 +95,6 @@ class ToolCallMessage(Message):
     """LLM wants to call tools - contains all tool call details."""
 
     type: MessageType = MessageType.TOOL_CALL
-    direction: Direction = Direction.AGENT_TO_USER
     tool_calls: list[ToolCallRequest]  # Properly typed tool calls
 
 
@@ -111,7 +102,6 @@ class ApprovalRequestMessage(Message):
     """Agent requests approval for a specific tool."""
 
     type: MessageType = MessageType.APPROVAL_REQUEST
-    direction: Direction = Direction.AGENT_TO_USER
     tool_id: str
     tool_name: str
     tool_args: dict[str, Any]
@@ -128,7 +118,6 @@ class ApprovalResponseMessage(Message):
     """User responds to approval request."""
 
     type: MessageType = MessageType.APPROVAL_RESPONSE
-    direction: Direction = Direction.USER_TO_AGENT
     tool_id: str
     decision: ApprovalDecision
     feedback: Optional[str] = None
@@ -138,7 +127,6 @@ class ToolStartedMessage(Message):
     """Agent notifies tool execution started."""
 
     type: MessageType = MessageType.TOOL_STARTED
-    direction: Direction = Direction.AGENT_TO_USER
     tool_id: str
     tool_name: str
 
@@ -147,7 +135,6 @@ class ToolResultMessage(Message):
     """Agent sends tool execution result."""
 
     type: MessageType = MessageType.TOOL_RESULT
-    direction: Direction = Direction.AGENT_TO_USER
     tool_id: str
     tool_name: str
     result: Any
@@ -157,7 +144,6 @@ class ToolErrorMessage(Message):
     """Agent sends tool execution error."""
 
     type: MessageType = MessageType.TOOL_ERROR
-    direction: Direction = Direction.AGENT_TO_USER
     tool_id: str
     tool_name: str
     error: str
@@ -168,7 +154,6 @@ class UsageMessage(Message):
     """Token usage information."""
 
     type: MessageType = MessageType.USAGE
-    direction: Direction = Direction.AGENT_TO_USER
     input_tokens: int
     output_tokens: int
     total_tokens: int
@@ -178,7 +163,6 @@ class ErrorMessage(Message):
     """Error message from agent."""
 
     type: MessageType = MessageType.ERROR
-    direction: Direction = Direction.AGENT_TO_USER
     error: str
     details: Optional[dict[str, Any]] = None
 
@@ -266,6 +250,44 @@ def create_usage_message(input_tokens: int, output_tokens: int, total_tokens: in
 def create_error_message(error: str, details: Optional[dict[str, Any]] = None) -> ErrorMessage:
     """Create an error message."""
     return ErrorMessage(error=error, details=details)
+
+
+def message_from_dict(data: dict) -> Message:
+    """Reconstruct a Message object from a dictionary.
+
+    Args:
+        data: Dictionary with message data including 'type' field
+
+    Returns:
+        Appropriate Message subclass instance
+
+    Raises:
+        ValueError: If message type is unknown
+    """
+    msg_type = data.get("type")
+
+    # Map MessageType enum values to Message classes
+    type_map = {
+        MessageType.AGENT.value: AgentMessage,
+        MessageType.USER.value: UserMessage,
+        MessageType.SYSTEM.value: SystemMessage,
+        MessageType.THINKING.value: ThinkingMessage,
+        MessageType.TOOL_CALL.value: ToolCallMessage,
+        MessageType.TOOL_RESULT.value: ToolResultMessage,
+        MessageType.TOOL_STARTED.value: ToolStartedMessage,
+        MessageType.TOOL_ERROR.value: ToolErrorMessage,
+        MessageType.APPROVAL_REQUEST.value: ApprovalRequestMessage,
+        MessageType.APPROVAL_RESPONSE.value: ApprovalResponseMessage,
+        MessageType.ERROR.value: ErrorMessage,
+        MessageType.USAGE.value: UsageMessage,
+    }
+
+    message_class = type_map.get(msg_type)
+    if not message_class:
+        raise ValueError(f"Unknown message type: {msg_type}")
+
+    # Use Pydantic validation
+    return message_class(**data)
 
 
 @dataclass

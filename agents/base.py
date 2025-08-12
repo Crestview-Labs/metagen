@@ -15,7 +15,6 @@ from common.messages import (
     ApprovalDecision,
     ApprovalRequestMessage,
     ApprovalResponseMessage,
-    Direction,
     ErrorMessage,
     Message,
     ThinkingMessage,
@@ -162,6 +161,7 @@ class BaseAgent(ABC):
             Response messages back to the user
         """
         if isinstance(message, UserMessage):
+            logger.info("[stream_chat] Processing UserMessage")
             # Build context including conversation history
             context_messages = await self.build_context(message.content)
 
@@ -169,8 +169,11 @@ class BaseAgent(ABC):
             messages = context_messages + [message]
 
             # Stream the response
+            logger.info("[stream_chat] Starting generate_stream_with_tools")
             async for response in self.generate_stream_with_tools(messages):
+                logger.info(f"[stream_chat] Yielding {type(response).__name__}")
                 yield response
+                logger.info(f"[stream_chat] Yielded {type(response).__name__}")
 
         elif isinstance(message, ApprovalResponseMessage):
             logger.info(
@@ -182,10 +185,7 @@ class BaseAgent(ABC):
             # No yield - the blocked tool flow will continue and yield
 
         else:
-            yield ErrorMessage(
-                direction=Direction.AGENT_TO_USER,
-                error=f"Unknown message type: {type(message).__name__}",
-            )
+            yield ErrorMessage(error=f"Unknown message type: {type(message).__name__}")
 
     async def generate_stream_with_tools(
         self, messages: list[Message], **kwargs: Any
@@ -198,22 +198,27 @@ class BaseAgent(ABC):
         3. Recursive tool calls
         4. Message yielding
         """
+        logger.info("[generate_stream_with_tools] Starting")
         # Initialize
         turn_id = await self._create_turn(messages)
 
         # Yield initial thinking
+        logger.info("[generate_stream_with_tools] Yielding ThinkingMessage")
         yield ThinkingMessage(content="Processing your request...")
 
         try:
             # Run the main conversation loop
+            logger.info("[generate_stream_with_tools] Starting _run_conversation_loop")
             async for message in self._run_conversation_loop(turn_id, messages, **kwargs):
+                logger.info(f"[generate_stream_with_tools] Got {type(message).__name__} from loop")
                 yield message
+                logger.info(f"[generate_stream_with_tools] Yielded {type(message).__name__}")
         except Exception as e:
             # Handle any errors that occur during processing
             logger.error(f"Error in conversation loop: {e}", exc_info=True)
 
             # Yield error message to user
-            yield ErrorMessage(direction=Direction.AGENT_TO_USER, error=str(e))
+            yield ErrorMessage(error=str(e))
 
             # Complete the turn with error status
             await self._complete_turn_with_error(turn_id, str(e))
@@ -307,12 +312,24 @@ class BaseAgent(ABC):
             # Handle tool flow inline
             tool_executions = []
             assert tool_requests is not None  # We checked above that we have tool requests
+            logger.info(
+                f"[_run_conversation_loop] Starting _handle_tool_flow "
+                f"with {len(tool_requests)} tools"
+            )
             async for item in self._handle_tool_flow(tool_requests, turn_id, tool_call_history):
+                logger.info(
+                    f"[_run_conversation_loop] Got {type(item).__name__} from _handle_tool_flow"
+                )
                 if isinstance(item, Message):
                     # Yield messages as they come
+                    logger.info(f"[_run_conversation_loop] Yielding {type(item).__name__}")
                     yield item
+                    logger.info(f"[_run_conversation_loop] Yielded {type(item).__name__}")
                 elif isinstance(item, list):
                     # Final result - list of executions
+                    logger.info(
+                        f"[_run_conversation_loop] Got execution list with {len(item)} items"
+                    )
                     tool_executions = item
                     break
 
@@ -442,14 +459,23 @@ class BaseAgent(ABC):
         )
 
         if pending_tools:
+            logger.info(f"[_handle_tool_flow] Have {len(pending_tools)} pending tools")
             # Emit approval requests
             for tool in pending_tools:  # type: ignore[assignment]
                 assert isinstance(tool, TrackedTool)  # Help mypy understand
+                logger.info(
+                    f"[_handle_tool_flow] 🚨 YIELDING ApprovalRequestMessage "
+                    f"for tool {tool.tool_name} (id={tool.tool_id})"
+                )
                 yield ApprovalRequestMessage(
                     agent_id=self.agent_id,
                     tool_id=tool.tool_id,
                     tool_name=tool.tool_name,
                     tool_args=tool.tool_args,
+                )
+                logger.info(
+                    f"[_handle_tool_flow] ✅ YIELDED ApprovalRequestMessage "
+                    f"for tool {tool.tool_name}"
                 )
 
             # Wait for ALL approvals to complete
@@ -596,11 +622,29 @@ class BaseAgent(ABC):
                     # Use wait_for to avoid blocking forever
                     message = await asyncio.wait_for(approval_queue.get(), timeout=0.1)
 
-                    # We should ONLY receive approval messages while waiting
-                    assert isinstance(message, ApprovalResponseMessage), (
-                        f"Expected ApprovalResponseMessage while waiting for approvals, "
-                        f"got {type(message).__name__}"
-                    )
+                    # If we get a non-approval message, put it back and auto-reject tools
+                    if not isinstance(message, ApprovalResponseMessage):
+                        logger.warning(
+                            f"Received {type(message).__name__} while waiting for approvals, "
+                            f"rejecting all pending tools"
+                        )
+                        # Put the message back for later processing
+                        await approval_queue.put(message)
+
+                        # Auto-reject all pending tools
+                        for tool in pending_tools:
+                            assert self._tool_tracker is not None  # Should always be initialized
+                            await self._tool_tracker.update_stage(
+                                tool.tool_id,
+                                ToolExecutionStage.REJECTED,
+                                error=(
+                                    "Client disconnected or new request received "
+                                    "while waiting for approval"
+                                ),
+                            )
+                        # Signal completion
+                        approval_event.set()
+                        return
 
                     logger.info(f"Queue monitor received approval for tool: {message.tool_id}")
 
@@ -609,9 +653,6 @@ class BaseAgent(ABC):
 
                 except asyncio.TimeoutError:
                     continue
-                except AssertionError as e:
-                    logger.error(f"Protocol violation: {e}")
-                    raise
                 except Exception as e:
                     logger.error(f"Error monitoring queue for approvals: {e}", exc_info=True)
                     raise

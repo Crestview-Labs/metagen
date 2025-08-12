@@ -1,49 +1,33 @@
 """Chat-related API models."""
 
-from datetime import datetime
-from typing import Any, Optional
+from typing import Optional, Union
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from agents.agent_manager import UIResponse
-from common.messages import UserMessage
+from common.messages import ApprovalDecision, ApprovalResponseMessage, Message, UserMessage
 
 
 class ChatRequest(BaseModel):
     """Request to send a message to the agent."""
 
-    message: str
+    message: Union[str, UserMessage, ApprovalResponseMessage] = Field(
+        description="Message to send to the agent - can be a string or a Message object"
+    )
     session_id: Optional[str] = None
 
-    def to_user_message(self) -> UserMessage:
-        """Convert ChatRequest to UserMessage."""
-        return UserMessage(content=self.message)
+    def to_message(self) -> Message:
+        """Convert to appropriate Message type."""
+        if isinstance(self.message, str):
+            return UserMessage(content=self.message)
+        else:
+            return self.message
 
 
-class UIResponseModel(BaseModel):
-    """Pydantic model for UIResponse."""
+class ApprovalResponse(BaseModel):
+    """Response from the approval endpoint."""
 
-    type: str
-    content: str
-    agent_id: str
-    metadata: Optional[dict[str, Any]] = None
-    timestamp: datetime
-
-    @classmethod
-    def from_ui_response(cls, ui_response: UIResponse) -> "UIResponseModel":
-        """Convert UIResponse to Pydantic model."""
-        return cls(
-            type=ui_response.type.value,
-            content=ui_response.content,
-            agent_id=ui_response.agent_id,
-            metadata=ui_response.metadata,
-            timestamp=ui_response.timestamp or datetime.now(),
-        )
-
-
-class ChatResponse(BaseModel):
-    """Response from agent chat."""
-
-    responses: list[UIResponseModel]
-    session_id: Optional[str] = None
-    success: bool = True
+    tool_id: str = Field(description="ID of the tool that was approved/rejected")
+    decision: ApprovalDecision = Field(description="The approval decision that was processed")
+    message: Optional[str] = Field(
+        default="Approval processed successfully", description="Optional status message"
+    )

@@ -3,16 +3,12 @@ creation."""
 
 import asyncio
 import logging
-from dataclasses import dataclass
-from datetime import datetime
-from enum import Enum
 from typing import Any, AsyncIterator, Optional
 
 from agents.base import BaseAgent
 from agents.memory import MemoryManager
 from agents.meta_agent import MetaAgent
 from agents.task_execution_agent import TaskExecutionAgent
-from agents.tool_result_formatter import tool_result_formatter
 from client.mcp_server import MCPServer
 from client.models import ModelID
 from common.messages import (
@@ -37,37 +33,6 @@ from tools.registry import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-class ResponseType(Enum):
-    """Types of responses for UI rendering."""
-
-    TEXT = "text"
-    ERROR = "error"
-    TOOL_CALL = "tool_call"
-    TOOL_RESULT = "tool_result"
-    THINKING = "thinking"
-    SYSTEM = "system"
-    TOOL_APPROVAL_REQUEST = "tool_approval_request"
-    TOOL_APPROVED = "tool_approved"
-    TOOL_REJECTED = "tool_rejected"
-    TOOL_EXECUTION_STARTED = "tool_execution_started"
-    TOOL_EXECUTION_COMPLETED = "tool_execution_completed"
-
-
-@dataclass
-class UIResponse:
-    """Structured response for UI/CLI rendering."""
-
-    type: ResponseType
-    content: str
-    agent_id: str
-    metadata: Optional[dict[str, Any]] = None
-    timestamp: Optional[datetime] = None
-
-    def __post_init__(self) -> None:
-        if self.timestamp is None:
-            self.timestamp = datetime.now()
 
 
 class AgentManager:
@@ -229,10 +194,17 @@ class AgentManager:
 
                 logger.info(f"🎬 MetaAgent starting to process {type(message).__name__}")
                 event_count = 0
+                logger.info("[MetaAgent Task] Starting to iterate over stream_chat")
                 async for msg in self.meta_agent.stream_chat(message):
+                    logger.info(f"[MetaAgent Task] Received {type(msg).__name__} from stream_chat")
                     event_count += 1
                     self._log_message(msg, "🎯")
+                    if isinstance(msg, ApprovalRequestMessage):
+                        logger.info(
+                            f"🚨 AgentManager received ApprovalRequestMessage: {msg.tool_name}"
+                        )
                     await self.unified_agent_output.put(msg)
+                    logger.info(f"[MetaAgent Task] Put {type(msg).__name__} into output queue")
 
                 logger.info(
                     f"✅ MetaAgent completed processing {type(message).__name__} "
@@ -339,12 +311,16 @@ class AgentManager:
         while True:
             try:
                 # Wait for output from any agent
+                logger.info("[Router] Waiting for message from unified_agent_output...")
                 msg = await self.unified_agent_output.get()
+                logger.info(f"[Router] Got {type(msg).__name__} from unified_agent_output")
                 message_count += 1
                 self._log_message(msg, "📨")
 
                 # Forward message directly to CLI
+                logger.info(f"[Router] Putting {type(msg).__name__} into cli_output_queue")
                 await self.cli_output_queue.put(msg)
+                logger.info(f"[Router] Put {type(msg).__name__} into cli_output_queue")
 
                 # Check for task completion via ToolResultMessage
                 if (
@@ -384,14 +360,12 @@ class AgentManager:
 
                 # Try to send error to output queue
                 try:
-                    error_response = UIResponse(
-                        type=ResponseType.ERROR,
-                        content=f"Router error: {str(e)}",
+                    error_message = ErrorMessage(
+                        error=f"Router error: {str(e)}",
                         agent_id="ROUTER",
-                        metadata={"error": str(e), "error_count": error_count},
-                        timestamp=datetime.now(),
+                        details={"error": str(e), "error_count": error_count},
                     )
-                    await self.cli_output_queue.put(error_response)
+                    await self.cli_output_queue.put(error_message)
                 except Exception as inner_e:
                     logger.error(f"Failed to send router error to output: {inner_e}")
 
@@ -425,26 +399,7 @@ class AgentManager:
             # Skip thinking messages in logs
             pass
 
-    def _map_stage_to_response_type(self, stage: str) -> ResponseType:
-        """Map agent stage to UIResponse type."""
-        stage_mapping = {
-            "thinking": ResponseType.THINKING,
-            "llm_call": ResponseType.THINKING,
-            "tool_call": ResponseType.TOOL_CALL,
-            "tool_result": ResponseType.TOOL_RESULT,
-            "tool_error": ResponseType.ERROR,
-            "processing": ResponseType.THINKING,
-            "response": ResponseType.TEXT,
-            "error": ResponseType.ERROR,
-            "tool_approval_request": ResponseType.TOOL_APPROVAL_REQUEST,
-            "tool_approved": ResponseType.TOOL_APPROVED,
-            "tool_rejected": ResponseType.TOOL_REJECTED,
-            "tool_execution_started": ResponseType.TOOL_EXECUTION_STARTED,
-            "tool_execution_completed": ResponseType.TOOL_EXECUTION_COMPLETED,
-        }
-        return stage_mapping.get(stage, ResponseType.SYSTEM)
-
-    async def initialize(self) -> UIResponse:
+    async def initialize(self) -> None:
         """Initialize all components and return status."""
         logger.info("Initializing AgentManager with FIFO architecture")
 
@@ -545,29 +500,11 @@ class AgentManager:
             tool_names = [tool.name for tool in tools]
 
             logger.info(f"Available tools ({len(tool_names)}): {', '.join(tool_names)}")
-
-            return UIResponse(
-                type=ResponseType.SYSTEM,
-                content="✓ AgentManager initialized successfully",
-                agent_id="SYSTEM",
-                metadata={
-                    "agent_name": self.agent_name,
-                    "agents": ["METAGEN", "TASK_AGENT_1"],
-                    "memory_path": str(self.db_engine.db_path),
-                    "available_tools": tool_names,
-                    "llm": self.llm,
-                    "architecture": "FIFO bidirectional streaming",
-                },
-            )
+            logger.info("✓ AgentManager initialized successfully")
 
         except Exception as e:
             logger.error(f"Initialization failed: {e}", exc_info=True)
-            return UIResponse(
-                type=ResponseType.ERROR,
-                content=f"Failed to initialize: {str(e)}",
-                agent_id="SYSTEM",
-                metadata={"error_type": type(e).__name__},
-            )
+            raise ValueError(f"Failed to initialize: {str(e)}")
 
     async def chat_stream(self, message: Message) -> AsyncIterator[Message]:
         """
@@ -597,12 +534,17 @@ class AgentManager:
 
             # Stream outputs from CLI output queue
             # Router task is already forwarding all agent outputs here
+            logger.info("[chat_stream] Starting to read from cli_output_queue")
             while True:
                 try:
                     # Get next message with timeout
+                    # Wait for message from cli_output_queue
                     msg = await asyncio.wait_for(self.cli_output_queue.get(), timeout=0.1)
+                    logger.info(f"[chat_stream] Got {type(msg).__name__} from cli_output_queue")
                     self._log_message(msg, "📥")
+                    logger.info(f"[chat_stream] Yielding {type(msg).__name__}")
                     yield msg
+                    logger.info(f"[chat_stream] Yielded {type(msg).__name__}")
 
                     # Check if this is a final response from MetaAgent
                     if isinstance(msg, AgentMessage) and msg.agent_id == "METAGEN" and msg.final:
@@ -643,184 +585,6 @@ class AgentManager:
             await self.task_agent_input.put(approval_message)
         else:
             logger.warning(f"Unknown agent_id in approval response: {approval_message.agent_id}")
-
-    def _parse_agent_response(self, response: str) -> list[UIResponse]:
-        """
-        Parse agent response and extract tool calls, tool results, and text.
-
-        This method identifies <function_calls> and <function_result> blocks
-        and separates them from regular text content.
-        """
-        parts = []
-        current_text = ""
-        in_function_call = False
-        in_function_result = False
-        function_call_content = ""
-        function_result_content = ""
-
-        lines = response.split("\n")
-
-        for line in lines:
-            if "<function_calls>" in line:
-                # Save any text before the function call
-                if current_text.strip():
-                    parts.append(
-                        UIResponse(
-                            type=ResponseType.TEXT,
-                            content=current_text.strip(),
-                            agent_id=self.current_agent_id,
-                        )
-                    )
-                    current_text = ""
-
-                in_function_call = True
-                function_call_content = ""
-
-                # Start tool call indicator
-                parts.append(
-                    UIResponse(
-                        type=ResponseType.TOOL_CALL,
-                        content="🔧 Calling tools...",
-                        agent_id=self.current_agent_id,
-                        metadata={"status": "started"},
-                    )
-                )
-
-            elif "</function_calls>" in line:
-                in_function_call = False
-
-                # Parse the function call content to extract tool names
-                tool_names = self._extract_tool_names(function_call_content)
-                if tool_names:
-                    parts.append(
-                        UIResponse(
-                            type=ResponseType.TOOL_CALL,
-                            content=f"📞 Called: {', '.join(tool_names)}",
-                            agent_id=self.current_agent_id,
-                            metadata={"tools": tool_names, "status": "completed"},
-                        )
-                    )
-
-                function_call_content = ""
-
-            elif "<function_result>" in line:
-                # Save any text before the function result
-                if current_text.strip():
-                    parts.append(
-                        UIResponse(
-                            type=ResponseType.TEXT,
-                            content=current_text.strip(),
-                            agent_id=self.current_agent_id,
-                        )
-                    )
-                    current_text = ""
-
-                in_function_result = True
-                function_result_content = ""
-
-            elif "</function_result>" in line:
-                in_function_result = False
-
-                # Parse and format the function result
-                formatted_result = tool_result_formatter.format_tool_result(function_result_content)
-                if formatted_result:
-                    parts.append(
-                        UIResponse(
-                            type=ResponseType.TOOL_RESULT,
-                            content=formatted_result,
-                            agent_id=self.current_agent_id,
-                            metadata={"raw_result": function_result_content.strip()},
-                        )
-                    )
-
-                function_result_content = ""
-
-            elif in_function_call:
-                function_call_content += line + "\n"
-            elif in_function_result:
-                function_result_content += line + "\n"
-            else:
-                current_text += line + "\n"
-
-        # Add any remaining text
-        if current_text.strip():
-            parts.append(
-                UIResponse(
-                    type=ResponseType.TEXT,
-                    content=current_text.strip(),
-                    agent_id=self.current_agent_id,
-                )
-            )
-
-        return parts
-
-    def _extract_tool_names(self, function_call_content: str) -> list[str]:
-        """Extract tool names from function call XML content."""
-        import re
-
-        # Find all <invoke name="tool_name"> patterns
-        pattern = r'<invoke name="([^"]+)">'
-        matches = re.findall(pattern, function_call_content)
-        return matches
-
-    async def search_memory(self, query: str, limit: int = 10) -> list[UIResponse]:
-        """Build context for a query (replaces simple search)."""
-        if not self._initialized:
-            return [
-                UIResponse(
-                    type=ResponseType.ERROR, content="Agent not initialized.", agent_id="SYSTEM"
-                )
-            ]
-
-        try:
-            current_agent = self._get_current_agent()
-            context = await current_agent.build_context(query)
-            responses = []
-
-            # Show what context was built
-            conversation_msgs = [msg for msg in context if msg["role"] in ["user", "assistant"]]
-            if not conversation_msgs:
-                responses.append(
-                    UIResponse(
-                        type=ResponseType.SYSTEM,
-                        content=f"No conversation context found for: {query}",
-                        agent_id=self.current_agent_id,
-                    )
-                )
-            else:
-                responses.append(
-                    UIResponse(
-                        type=ResponseType.SYSTEM,
-                        content=(
-                            f"Built context with {len(conversation_msgs)} conversation "
-                            f"messages for: {query}"
-                        ),
-                        agent_id=self.current_agent_id,
-                    )
-                )
-
-                # Show recent conversation messages (limit to what user requested)
-                for msg in conversation_msgs[-limit * 2 :]:  # *2 because user+assistant pairs
-                    role_prefix = "You: " if msg["role"] == "user" else f"{self.current_agent_id}: "
-                    responses.append(
-                        UIResponse(
-                            type=ResponseType.TEXT,
-                            content=role_prefix + msg["content"],
-                            agent_id=self.current_agent_id,
-                            metadata={"context_result": True, "role": msg["role"]},
-                        )
-                    )
-
-            return responses
-
-        except Exception as e:
-            return [
-                UIResponse(
-                    type=ResponseType.ERROR,
-                    content=f"Context building failed: {str(e)}",
-                    agent_id="SYSTEM",
-                )
-            ]
 
     async def _intercept_execute_task(
         self, tool_call_id: str, tool_name: str, parameters: dict[str, Any]
@@ -990,48 +754,50 @@ class AgentManager:
                 metadata={},
             )
 
-    async def get_system_info(self) -> UIResponse:
-        """Get system information."""
+    async def get_system_info(self) -> Any:
+        """Get system information.
+
+        Returns SystemInfo model directly instead of UIResponse.
+        """
+        from api.models.system import SystemInfo, ToolInfo
+
         if not self._initialized:
-            return UIResponse(
-                type=ResponseType.ERROR, content="Agent not initialized.", agent_id="SYSTEM"
-            )
+            raise ValueError("Agent not initialized.")
+
+        if self.meta_agent is None:
+            raise ValueError("MetaAgent not initialized.")
 
         try:
             # Get info from MetaAgent
-            if self.meta_agent is None:
-                return UIResponse(
-                    type=ResponseType.ERROR, content="MetaAgent not initialized.", agent_id="SYSTEM"
-                )
-
             info = self.meta_agent.get_agent_info()
             tools = await self.meta_agent.get_available_tools()
             model = await self.meta_agent.get_current_model()
+            assert model is not None, "Model should never be None"
 
-            return UIResponse(
-                type=ResponseType.SYSTEM,
-                content=f"Agent: {info['agent_id']}\nModel: {model}\nTools: {len(tools)} available",
-                agent_id="METAGEN",
-                metadata={
-                    "agent_info": info,
-                    "model": model,
-                    "tools": [t.name for t in tools],
-                    "architecture": "FIFO bidirectional streaming",
-                    "agents": [
-                        "METAGEN",
-                        self.task_agent.agent_id if self.task_agent else "TASK_UNKNOWN",
-                    ],
-                },
+            # Convert tools to ToolInfo models
+            tool_infos = [
+                ToolInfo(
+                    name=tool.name, description=tool.description, input_schema=tool.input_schema
+                )
+                for tool in tools
+            ]
+
+            # Get memory path
+            memory_path = self.memory_manager.db_path if self.memory_manager else "/tmp/memory.db"
+
+            return SystemInfo(
+                agent_name=info.get("agent_id", self.agent_name),
+                model=model,
+                tools=tool_infos,
+                tool_count=len(tool_infos),
+                memory_path=memory_path,
+                initialized=self._initialized,
             )
 
         except Exception as e:
-            return UIResponse(
-                type=ResponseType.ERROR,
-                content=f"Failed to get system info: {str(e)}",
-                agent_id="SYSTEM",
-            )
+            raise ValueError(f"Failed to get system info: {str(e)}")
 
-    async def cleanup(self) -> UIResponse:
+    async def cleanup(self) -> None:
         """Clean up resources."""
         try:
             # Cancel persistent tasks
@@ -1058,15 +824,11 @@ class AgentManager:
             self.mcp_servers_instances.clear()
 
             self._initialized = False
-
-            return UIResponse(
-                type=ResponseType.SYSTEM, content="Agent shut down successfully", agent_id="SYSTEM"
-            )
+            logger.info("Agent shut down successfully")
 
         except Exception as e:
-            return UIResponse(
-                type=ResponseType.ERROR, content=f"Cleanup error: {str(e)}", agent_id="SYSTEM"
-            )
+            logger.error(f"Cleanup error: {str(e)}", exc_info=True)
+            raise ValueError(f"Cleanup error: {str(e)}")
 
     def _log_agent_message(
         self, context: str, message: AgentMessage, outgoing: bool = False

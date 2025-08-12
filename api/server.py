@@ -15,6 +15,7 @@ from config import TOOL_APPROVAL_CONFIG
 from db import get_db_engine
 from telemetry import init_telemetry
 
+from .__version__ import API_VERSION
 from .routes.auth import auth_router
 from .routes.chat import chat_router
 from .routes.memory import router as memory_router
@@ -53,11 +54,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             agent_name="MetaAgent", db_engine=db_engine, mcp_servers=["tools/mcp_server.py"]
         )
 
-        response = await manager.initialize()
-        if response.type.value == "error":
-            logger.error(f"Failed to initialize AgentManager: {response.content}")
-            raise Exception(f"Manager initialization failed: {response.content}")
-
+        await manager.initialize()
         logger.info("✅ AgentManager initialized successfully")
 
         # Configure tool approval from centralized config
@@ -96,7 +93,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Metagen Backend API",
         description="HTTP API for Metagen superintelligent personal agent",
-        version="0.1.0",
+        version=API_VERSION,
         lifespan=lifespan,
     )
 
@@ -108,6 +105,14 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Add version header middleware
+    @app.middleware("http")
+    async def add_version_header(request: Request, call_next):
+        """Add API version to all responses."""
+        response = await call_next(request)
+        response.headers["X-API-Version"] = API_VERSION
+        return response
 
     # Add OpenTelemetry FastAPI instrumentation
     # Note: This must be done AFTER all routes are added

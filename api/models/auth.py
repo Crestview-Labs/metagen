@@ -24,6 +24,6 @@ class AuthResponse(BaseModel):
     """Authentication operation response."""
 
     success: bool
-    message: str
+    message: Optional[str] = None
     auth_url: Optional[str] = None  # For OAuth flow initiation
     status: Optional[AuthStatus] = None

@@ -62,6 +62,16 @@ node_modules/
 bundle/
 *.tsbuildinfo
 *.log
+api/ts/dist/
+api/ts/lib/
+
+# Swift
+api/swift/.build/
+api/swift/.swiftpm/
+api/swift/Package.resolved
+DerivedData/
+*.xcodeproj
+*.xcworkspace
 
 # Temporary test files in root directory only
 /test_*.py
@@ -69,6 +79,11 @@ bundle/
 # Local documentation (Claude Code notes)
 *.md
 !README.md
+!docs/**/*.md
+!scripts/**/*.md
+
+# Build artifacts
+build/artifacts/
 
 # Temporary files
 *.tmp

@@ -10,7 +10,6 @@ from .messages import (
     # Chat messages
     ChatMessage,
     # Base classes
-    Direction,
     ErrorMessage,
     Message,
     MessageType,
@@ -49,7 +48,6 @@ __all__ = [
     # Constants
     "DEFAULT_AGENT_ID",
     # Base classes
-    "Direction",
     "MessageType",
     "Message",
     "AnyMessage",
