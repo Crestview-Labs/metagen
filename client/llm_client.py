@@ -149,6 +149,8 @@ class LLMClient:
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
+        agent_id: str = "METAGEN",
+        session_id: str = "",
         **kwargs: Any,
     ) -> AsyncIterator[Message]:
         """
@@ -207,7 +209,7 @@ class LLMClient:
 
         # Yield content if present
         if response.content:
-            yield AgentMessage(content=response.content)
+            yield AgentMessage(agent_id=agent_id, session_id=session_id, content=response.content)
 
         # Yield tool calls if present
         if hasattr(response, "tool_calls") and response.tool_calls:
@@ -222,11 +224,15 @@ class LLMClient:
                     )
                 )
 
-            yield ToolCallMessage(tool_calls=tool_call_requests)
+            yield ToolCallMessage(
+                agent_id=agent_id, session_id=session_id, tool_calls=tool_call_requests
+            )
 
         # Yield usage information
         if hasattr(response, "usage") and response.usage:
             yield UsageMessage(
+                agent_id=agent_id,
+                session_id=session_id,
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
                 total_tokens=response.usage.total_tokens,

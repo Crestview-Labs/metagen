@@ -160,6 +160,9 @@ class BaseAgent(ABC):
         Yields:
             Response messages back to the user
         """
+        # Extract session_id from the incoming message
+        session_id = message.session_id
+
         if isinstance(message, UserMessage):
             logger.info("[stream_chat] Processing UserMessage")
             # Build context including conversation history
@@ -168,9 +171,9 @@ class BaseAgent(ABC):
             # Add the current user message to the context
             messages = context_messages + [message]
 
-            # Stream the response
+            # Stream the response with session_id
             logger.info("[stream_chat] Starting generate_stream_with_tools")
-            async for response in self.generate_stream_with_tools(messages):
+            async for response in self.generate_stream_with_tools(messages, session_id=session_id):
                 logger.info(f"[stream_chat] Yielding {type(response).__name__}")
                 yield response
                 logger.info(f"[stream_chat] Yielded {type(response).__name__}")
@@ -185,10 +188,14 @@ class BaseAgent(ABC):
             # No yield - the blocked tool flow will continue and yield
 
         else:
-            yield ErrorMessage(error=f"Unknown message type: {type(message).__name__}")
+            yield ErrorMessage(
+                agent_id=self.agent_id,
+                session_id=session_id,
+                error=f"Unknown message type: {type(message).__name__}",
+            )
 
     async def generate_stream_with_tools(
-        self, messages: list[Message], **kwargs: Any
+        self, messages: list[Message], session_id: str, **kwargs: Any
     ) -> AsyncIterator[Message]:
         """Generate streaming response with recursive tool support.
 
@@ -204,12 +211,16 @@ class BaseAgent(ABC):
 
         # Yield initial thinking
         logger.info("[generate_stream_with_tools] Yielding ThinkingMessage")
-        yield ThinkingMessage(content="Processing your request...")
+        yield ThinkingMessage(
+            agent_id=self.agent_id, session_id=session_id, content="Processing your request..."
+        )
 
         try:
             # Run the main conversation loop
             logger.info("[generate_stream_with_tools] Starting _run_conversation_loop")
-            async for message in self._run_conversation_loop(turn_id, messages, **kwargs):
+            async for message in self._run_conversation_loop(
+                turn_id, messages, session_id, **kwargs
+            ):
                 logger.info(f"[generate_stream_with_tools] Got {type(message).__name__} from loop")
                 yield message
                 logger.info(f"[generate_stream_with_tools] Yielded {type(message).__name__}")
@@ -218,14 +229,14 @@ class BaseAgent(ABC):
             logger.error(f"Error in conversation loop: {e}", exc_info=True)
 
             # Yield error message to user
-            yield ErrorMessage(error=str(e))
+            yield ErrorMessage(agent_id=self.agent_id, session_id=session_id, error=str(e))
 
             # Complete the turn with error status
             await self._complete_turn_with_error(turn_id, str(e))
             raise
 
     async def _run_conversation_loop(
-        self, turn_id: str, messages: list[Message], **kwargs: Any
+        self, turn_id: str, messages: list[Message], session_id: str, **kwargs: Any
     ) -> AsyncIterator[Message]:
         """Run the main conversation loop with tool support."""
         current_messages = messages.copy()
@@ -257,6 +268,8 @@ class BaseAgent(ABC):
                 self.tools,
                 tool_calls=previous_tool_calls,
                 tool_results=previous_tool_results,
+                agent_id=self.agent_id,
+                session_id=session_id,
                 **kwargs,
             )
 
@@ -267,8 +280,9 @@ class BaseAgent(ABC):
             # Stream LLM response (now yields Message objects directly)
             last_agent_message = None
             async for message in llm_stream:
-                # Set agent_id on all messages from LLM
+                # Set agent_id and session_id on all messages from LLM
                 message.agent_id = self.agent_id
+                message.session_id = session_id
 
                 if isinstance(message, AgentMessage):
                     content_buffer += message.content
@@ -306,7 +320,11 @@ class BaseAgent(ABC):
             elif not tool_requests and not content_buffer:
                 # No content and no tools - this shouldn't happen
                 logger.error("LLM returned neither content nor tool requests")
-                yield ErrorMessage(error="Unexpected empty response from LLM")
+                yield ErrorMessage(
+                    agent_id=self.agent_id,
+                    session_id=session_id,
+                    error="Unexpected empty response from LLM",
+                )
                 break
 
             # Handle tool flow inline
@@ -316,7 +334,9 @@ class BaseAgent(ABC):
                 f"[_run_conversation_loop] Starting _handle_tool_flow "
                 f"with {len(tool_requests)} tools"
             )
-            async for item in self._handle_tool_flow(tool_requests, turn_id, tool_call_history):
+            async for item in self._handle_tool_flow(
+                tool_requests, turn_id, tool_call_history, session_id
+            ):
                 logger.info(
                     f"[_run_conversation_loop] Got {type(item).__name__} from _handle_tool_flow"
                 )
@@ -360,14 +380,21 @@ class BaseAgent(ABC):
         if iteration >= self._max_iterations:
             logger.warning(f"Hit max iterations ({self._max_iterations})")
             yield ErrorMessage(
-                error="Maximum conversation iterations reached", details={"iterations": iteration}
+                agent_id=self.agent_id,
+                session_id=session_id,
+                error="Maximum conversation iterations reached",
+                details={"iterations": iteration},
             )
 
         # Complete turn with all data
         await self._complete_turn(turn_id, all_response_content, all_tool_calls, all_tool_results)
 
     async def _handle_tool_flow(
-        self, tool_requests: list[ToolCallRequest], turn_id: str, tool_call_history: dict[str, int]
+        self,
+        tool_requests: list[ToolCallRequest],
+        turn_id: str,
+        tool_call_history: dict[str, int],
+        session_id: str,
     ) -> AsyncIterator[Union[Message, list[ToolExecution]]]:
         """Handle complete tool flow including approvals.
 
@@ -469,6 +496,7 @@ class BaseAgent(ABC):
                 )
                 yield ApprovalRequestMessage(
                     agent_id=self.agent_id,
+                    session_id=session_id,
                     tool_id=tool.tool_id,
                     tool_name=tool.tool_name,
                     tool_args=tool.tool_args,
@@ -505,10 +533,15 @@ class BaseAgent(ABC):
         # Emit execution started events for approved tools
         for tool in approved_tools:  # type: ignore[assignment]
             assert isinstance(tool, TrackedTool)  # Help mypy understand
-            yield ToolStartedMessage(tool_id=tool.tool_id, tool_name=tool.tool_name)
+            yield ToolStartedMessage(
+                agent_id=self.agent_id,
+                session_id=session_id,
+                tool_id=tool.tool_id,
+                tool_name=tool.tool_name,
+            )
 
         # Execute all tools (approved and rejected)
-        execution_results = await self._execute_approved_tools()
+        execution_results = await self._execute_approved_tools(session_id)
 
         # Build final execution list and yield results
         executions = []
@@ -526,7 +559,11 @@ class BaseAgent(ABC):
 
             # Create tool call
             tool_call = ToolCall(
-                id=found_tool.tool_id, name=found_tool.tool_name, arguments=found_tool.tool_args
+                id=found_tool.tool_id,
+                name=found_tool.tool_name,
+                arguments=found_tool.tool_args,
+                agent_id=self.agent_id,
+                session_id=session_id,
             )
 
             # Create execution record
@@ -536,6 +573,8 @@ class BaseAgent(ABC):
             assert result.tool_call_id is not None  # We always set tool_call_id
             if result.is_error:
                 yield ToolErrorMessage(
+                    agent_id=self.agent_id,
+                    session_id=session_id,
                     tool_id=result.tool_call_id,
                     tool_name=result.tool_name,
                     error=result.error or "Unknown error",
@@ -544,6 +583,8 @@ class BaseAgent(ABC):
                 # Only yield tool result if configured to show them
                 if self.show_tool_results:
                     yield ToolResultMessage(
+                        agent_id=self.agent_id,
+                        session_id=session_id,
                         tool_id=result.tool_call_id,
                         tool_name=result.tool_name,
                         result=result.content,  # Full content
@@ -680,7 +721,7 @@ class BaseAgent(ABC):
         """Check if a tool requires approval."""
         return self._require_tool_approval and tool_name not in self._auto_approve_tools
 
-    async def _execute_approved_tools(self) -> list[ToolCallResult]:
+    async def _execute_approved_tools(self, session_id: str) -> list[ToolCallResult]:
         """Execute all approved tools."""
         if not self._tool_tracker:
             return []
@@ -697,8 +738,14 @@ class BaseAgent(ABC):
             # Execute the tool
             try:
                 executor = get_tool_executor()
-                # Create ToolCall object
-                tool_call = ToolCall(id=tool.tool_id, name=tool.tool_name, arguments=tool.tool_args)
+                # Create ToolCall object with session context
+                tool_call = ToolCall(
+                    id=tool.tool_id,
+                    name=tool.tool_name,
+                    arguments=tool.tool_args,
+                    agent_id=self.agent_id,
+                    session_id=session_id,
+                )
                 result = await executor.execute(tool_call)
 
                 # Update tracker with result
@@ -712,6 +759,8 @@ class BaseAgent(ABC):
                 error_result = ToolCallResult(
                     tool_name=tool.tool_name,
                     tool_call_id=tool.tool_id,
+                    agent_id=self.agent_id,
+                    session_id=session_id,
                     content=str(e),
                     is_error=True,
                     error=str(e),
@@ -732,6 +781,8 @@ class BaseAgent(ABC):
             error_result = ToolCallResult(
                 tool_name=tool.tool_name,
                 tool_call_id=tool.tool_id,
+                agent_id=self.agent_id,
+                session_id=session_id,
                 content=tool.error or "Tool rejected",
                 is_error=True,
                 error=tool.error or "Tool rejected",

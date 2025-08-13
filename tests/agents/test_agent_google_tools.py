@@ -90,12 +90,13 @@ class TestAgentGoogleToolIntegration:
         assert len(google_tools) > 0, f"No Google tools found. Available: {tool_names}"
 
     async def test_agent_lists_gmail_capabilities(
-        self, meta_agent_with_google_tools: MetaAgent
+        self, meta_agent_with_google_tools: MetaAgent, session_id: str
     ) -> None:
         """Test agent can describe Gmail capabilities."""
         response = ""
         user_message = UserMessage(
-            content="What Gmail operations can you perform? List the specific tools available."
+            session_id=session_id,
+            content="What Gmail operations can you perform? List the specific tools available.",
         )
         async for message in meta_agent_with_google_tools.stream_chat(user_message):
             if isinstance(message, AgentMessage):
@@ -111,11 +112,13 @@ class TestAgentGoogleToolIntegration:
         )
 
     async def test_agent_describes_drive_operations(
-        self, meta_agent_with_google_tools: MetaAgent
+        self, meta_agent_with_google_tools: MetaAgent, session_id: str
     ) -> None:
         """Test agent can describe Google Drive operations."""
         response = ""
-        user_message = UserMessage(content="What Google Drive operations are available to you?")
+        user_message = UserMessage(
+            session_id=session_id, content="What Google Drive operations are available to you?"
+        )
         async for message in meta_agent_with_google_tools.stream_chat(user_message):
             if isinstance(message, AgentMessage):
                 response += message.content
@@ -130,11 +133,13 @@ class TestAgentGoogleToolIntegration:
         )
 
     async def test_agent_describes_calendar_capabilities(
-        self, meta_agent_with_google_tools: MetaAgent
+        self, meta_agent_with_google_tools: MetaAgent, session_id: str
     ) -> None:
         """Test agent can describe Calendar capabilities."""
         response = ""
-        user_message = UserMessage(content="What calendar operations can you help me with?")
+        user_message = UserMessage(
+            session_id=session_id, content="What calendar operations can you help me with?"
+        )
         async for message in meta_agent_with_google_tools.stream_chat(user_message):
             if isinstance(message, AgentMessage):
                 response += message.content
@@ -149,7 +154,7 @@ class TestAgentGoogleToolIntegration:
         )
 
     async def test_agent_checks_google_auth_status(
-        self, meta_agent_with_google_tools: MetaAgent
+        self, meta_agent_with_google_tools: MetaAgent, session_id: str
     ) -> None:
         """Test agent can check Google authentication status."""
         response = ""
@@ -158,7 +163,8 @@ class TestAgentGoogleToolIntegration:
 
         # Try a more explicit request that should definitely use a tool
         user_message = UserMessage(
-            content="Use the gmail_search tool to search for emails with the query 'test'"
+            session_id=session_id,
+            content="Use the gmail_search tool to search for emails with the query 'test'",
         )
         from common.messages import ToolStartedMessage
 
@@ -178,12 +184,14 @@ class TestAgentGoogleToolIntegration:
         )
 
     async def test_agent_handles_missing_auth_gracefully(
-        self, meta_agent_with_google_tools: MetaAgent
+        self, meta_agent_with_google_tools: MetaAgent, session_id: str
     ) -> None:
         """Test agent handles missing authentication gracefully."""
         response = ""
 
-        user_message = UserMessage(content="Search my Gmail for messages from last week")
+        user_message = UserMessage(
+            session_id=session_id, content="Search my Gmail for messages from last week"
+        )
         async for message in meta_agent_with_google_tools.stream_chat(user_message):
             if isinstance(message, AgentMessage):
                 response += message.content
@@ -210,13 +218,15 @@ class TestAgentGoogleToolIntegration:
         reason="Google auth token not found - run /auth google first",
     )
     async def test_agent_uses_gmail_search_with_auth(
-        self, meta_agent_with_google_tools: MetaAgent
+        self, meta_agent_with_google_tools: MetaAgent, session_id: str
     ) -> None:
         """Test agent can search Gmail when authenticated."""
         response = ""
         tool_calls = []
 
-        user_message = UserMessage(content="Search my emails for 'test' from the last 7 days")
+        user_message = UserMessage(
+            session_id=session_id, content="Search my emails for 'test' from the last 7 days"
+        )
         from common.messages import ToolCallMessage
 
         async for message in meta_agent_with_google_tools.stream_chat(user_message):
@@ -237,13 +247,14 @@ class TestAgentGoogleToolIntegration:
         )
 
     async def test_agent_suggests_authentication(
-        self, meta_agent_with_google_tools: MetaAgent
+        self, meta_agent_with_google_tools: MetaAgent, session_id: str
     ) -> None:
         """Test agent suggests authentication when needed."""
         response = ""
 
         user_message = UserMessage(
-            content="I want to send an email but I'm not sure if I'm authenticated"
+            session_id=session_id,
+            content="I want to send an email but I'm not sure if I'm authenticated",
         )
         async for message in meta_agent_with_google_tools.stream_chat(user_message):
             if isinstance(message, AgentMessage):

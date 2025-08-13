@@ -124,7 +124,7 @@ class TestLLMClientUnit:
         ]
 
         # Create messages
-        messages: list[Message] = [UserMessage(content="What is 2 + 2?")]
+        messages: list[Message] = [UserMessage(session_id="test-session", content="What is 2 + 2?")]
 
         # Collect events
         events = []
@@ -199,7 +199,11 @@ class TestLLMClientUnit:
             ),
         ]
 
-        messages = [UserMessage(content="What's the weather in Paris in Fahrenheit?")]
+        messages = [
+            UserMessage(
+                session_id="test-session", content="What's the weather in Paris in Fahrenheit?"
+            )
+        ]
 
         # Collect events
         events = []
@@ -233,7 +237,7 @@ class TestLLMClientUnit:
         mock_provider.generate.return_value = mock_response
 
         # Create initial messages
-        messages: list[Message] = [UserMessage(content="What is 2 + 2?")]
+        messages: list[Message] = [UserMessage(session_id="test-session", content="What is 2 + 2?")]
 
         # Create tool calls and results
         tool_calls = [ToolCall(id="call_1", name="calculator", arguments={"expression": "2 + 2"})]
@@ -306,7 +310,7 @@ class TestLLMClientUnit:
         mock_provider.generate.side_effect = [initial_response, error_response]
 
         # Create messages and tool with error result
-        messages = [UserMessage(content="Calculate 1/0")]
+        messages = [UserMessage(session_id="test-session", content="Calculate 1/0")]
         tools = [
             Tool(
                 name="calculator",
@@ -597,7 +601,9 @@ class TestLLMClientIntegration:
                 )
             ]
 
-            messages: list[Message] = [UserMessage(content="What time is it?")]
+            messages: list[Message] = [
+                UserMessage(session_id="test-session", content="What time is it?")
+            ]
 
             # Collect events
             events = []
@@ -662,7 +668,9 @@ class TestLLMClientIntegration:
 
         try:
             # Initial message
-            messages: list[Message] = [UserMessage(content="I need to calculate 15% of 85.")]
+            messages: list[Message] = [
+                UserMessage(session_id="test-session", content="I need to calculate 15% of 85.")
+            ]
 
             tools = [
                 Tool(

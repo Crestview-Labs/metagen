@@ -140,7 +140,12 @@ class TestTaskExecutionAgent:
     ) -> None:
         """Test stream_chat behavior when task context is set."""
         # Mock the LLM client
-        mock_response = AgentMessage(content="Task processing initiated", final=True)
+        mock_response = AgentMessage(
+            agent_id="TASK_AGENT",
+            session_id="test-session",
+            content="Task processing initiated",
+            final=True,
+        )
 
         async def mock_generate_stream(*args: Any, **kwargs: Any) -> Any:
             yield mock_response
@@ -151,7 +156,7 @@ class TestTaskExecutionAgent:
         task_execution_agent.set_current_task(sample_task_context)
 
         # Create a user message
-        user_msg = UserMessage(content="Please execute the current task")
+        user_msg = UserMessage(session_id="test-session", content="Please execute the current task")
 
         # Collect messages from stream_chat
         messages = []
@@ -178,13 +183,20 @@ class TestTaskExecutionAgent:
         # Mock the LLM response with tool calls
         mock_messages = [
             ToolCallMessage(
+                agent_id="TASK_AGENT",
+                session_id="test-session",
                 tool_calls=[
                     ToolCallRequest(
                         tool_id="1", tool_name="read_file", tool_args={"path": "/tmp/test.txt"}
                     )
-                ]
+                ],
             ),
-            AgentMessage(content="Task completed", final=True),
+            AgentMessage(
+                agent_id="TASK_AGENT",
+                session_id="test-session",
+                content="Task completed",
+                final=True,
+            ),
         ]
 
         async def mock_generate_stream(*args: Any, **kwargs: Any) -> Any:
@@ -197,7 +209,7 @@ class TestTaskExecutionAgent:
         task_execution_agent.set_current_task(sample_task_context)
 
         # Create a user message
-        user_msg = UserMessage(content="Execute task")
+        user_msg = UserMessage(session_id="test-session", content="Execute task")
 
         # Collect all messages
         messages = []

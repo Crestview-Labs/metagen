@@ -39,6 +39,7 @@ class Message(BaseModel):
     type: MessageType
     timestamp: datetime = Field(default_factory=datetime.now)
     agent_id: str = DEFAULT_AGENT_ID  # TODO: This should be set properly by each agent
+    session_id: str  # Required - for routing responses to correct client(s)
     # TODO: Consider adding task_id as well for task context tracking
     # TODO: Review if we need both agent_id on Message base and on
     # specific messages like ApprovalRequest
@@ -185,74 +186,110 @@ AnyMessage = Union[
 
 
 # Helper functions for message creation
-def create_user_message(content: str, agent_id: str = DEFAULT_AGENT_ID) -> UserMessage:
+def create_user_message(agent_id: str, session_id: str, content: str) -> UserMessage:
     """Create a user chat message."""
-    return UserMessage(content=content, agent_id=agent_id)
+    return UserMessage(agent_id=agent_id, session_id=session_id, content=content)
 
 
-def create_agent_message(content: str, agent_id: str = DEFAULT_AGENT_ID) -> AgentMessage:
+def create_agent_message(agent_id: str, session_id: str, content: str) -> AgentMessage:
     """Create an agent chat message."""
-    return AgentMessage(content=content, agent_id=agent_id)
+    return AgentMessage(agent_id=agent_id, session_id=session_id, content=content)
 
 
-def create_thinking_message(message: str, agent_id: str = DEFAULT_AGENT_ID) -> ThinkingMessage:
+def create_thinking_message(agent_id: str, session_id: str, message: str) -> ThinkingMessage:
     """Create a thinking indicator message."""
-    return ThinkingMessage(content=message, agent_id=agent_id)
+    return ThinkingMessage(agent_id=agent_id, session_id=session_id, content=message)
 
 
 def create_tool_call_message(
-    tool_calls: list[ToolCallRequest], agent_id: str = DEFAULT_AGENT_ID
+    agent_id: str, session_id: str, tool_calls: list[ToolCallRequest]
 ) -> ToolCallMessage:
     """Create a tool call message."""
-    return ToolCallMessage(tool_calls=tool_calls, agent_id=agent_id)
+    return ToolCallMessage(agent_id=agent_id, session_id=session_id, tool_calls=tool_calls)
 
 
 def create_approval_request(
-    agent_id: str, tool_id: str, tool_name: str, tool_args: dict[str, Any]
+    agent_id: str, session_id: str, tool_id: str, tool_name: str, tool_args: dict[str, Any]
 ) -> ApprovalRequestMessage:
     """Create an approval request message."""
     return ApprovalRequestMessage(
-        agent_id=agent_id, tool_id=tool_id, tool_name=tool_name, tool_args=tool_args
+        agent_id=agent_id,
+        session_id=session_id,
+        tool_id=tool_id,
+        tool_name=tool_name,
+        tool_args=tool_args,
     )
 
 
 def create_approval_response(
-    agent_id: str, tool_id: str, decision: ApprovalDecision, feedback: Optional[str] = None
+    agent_id: str,
+    session_id: str,
+    tool_id: str,
+    decision: ApprovalDecision,
+    feedback: Optional[str] = None,
 ) -> ApprovalResponseMessage:
     """Create an approval response message."""
     return ApprovalResponseMessage(
-        agent_id=agent_id, tool_id=tool_id, decision=decision, feedback=feedback
+        agent_id=agent_id,
+        session_id=session_id,
+        tool_id=tool_id,
+        decision=decision,
+        feedback=feedback,
     )
 
 
-def create_tool_started(tool_id: str, tool_name: str) -> ToolStartedMessage:
+def create_tool_started(
+    agent_id: str, session_id: str, tool_id: str, tool_name: str
+) -> ToolStartedMessage:
     """Create a tool started notification."""
-    return ToolStartedMessage(tool_id=tool_id, tool_name=tool_name)
+    return ToolStartedMessage(
+        agent_id=agent_id, session_id=session_id, tool_id=tool_id, tool_name=tool_name
+    )
 
 
-def create_tool_result(tool_id: str, tool_name: str, result: Any) -> ToolResultMessage:
+def create_tool_result(
+    agent_id: str, session_id: str, tool_id: str, tool_name: str, result: Any
+) -> ToolResultMessage:
     """Create a tool result message."""
-    return ToolResultMessage(tool_id=tool_id, tool_name=tool_name, result=result)
+    return ToolResultMessage(
+        agent_id=agent_id,
+        session_id=session_id,
+        tool_id=tool_id,
+        tool_name=tool_name,
+        result=result,
+    )
 
 
-def create_tool_error(tool_id: str, tool_name: str, error: str) -> ToolErrorMessage:
+def create_tool_error(
+    agent_id: str, session_id: str, tool_id: str, tool_name: str, error: str
+) -> ToolErrorMessage:
     """Create a tool error message."""
-    return ToolErrorMessage(tool_id=tool_id, tool_name=tool_name, error=error)
+    return ToolErrorMessage(
+        agent_id=agent_id, session_id=session_id, tool_id=tool_id, tool_name=tool_name, error=error
+    )
 
 
-def create_usage_message(input_tokens: int, output_tokens: int, total_tokens: int) -> UsageMessage:
+def create_usage_message(
+    agent_id: str, session_id: str, input_tokens: int, output_tokens: int, total_tokens: int
+) -> UsageMessage:
     """Create a usage statistics message."""
     return UsageMessage(
-        input_tokens=input_tokens, output_tokens=output_tokens, total_tokens=total_tokens
+        agent_id=agent_id,
+        session_id=session_id,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
     )
 
 
-def create_error_message(error: str, details: Optional[dict[str, Any]] = None) -> ErrorMessage:
+def create_error_message(
+    agent_id: str, session_id: str, error: str, details: Optional[dict[str, Any]] = None
+) -> ErrorMessage:
     """Create an error message."""
-    return ErrorMessage(error=error, details=details)
+    return ErrorMessage(agent_id=agent_id, session_id=session_id, error=error, details=details)
 
 
-def message_from_dict(data: dict) -> Message:
+def message_from_dict(data: dict[str, Any]) -> Message:
     """Reconstruct a Message object from a dictionary.
 
     Args:
@@ -266,7 +303,7 @@ def message_from_dict(data: dict) -> Message:
     """
     msg_type = data.get("type")
     if msg_type is None:
-        raise ValueError("Message data missing 'type' field")
+        raise ValueError("Missing 'type' field in message data")
 
     # Map MessageType enum values to Message classes
     type_map: dict[str, type[Message]] = {

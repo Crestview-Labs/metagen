@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+import uuid
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
@@ -28,6 +29,12 @@ load_dotenv()
 
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+@pytest.fixture
+def session_id() -> str:
+    """Generate a unique session ID for testing."""
+    return f"test-session-{uuid.uuid4().hex[:8]}"
 
 
 def with_openai_key(func: F) -> F:

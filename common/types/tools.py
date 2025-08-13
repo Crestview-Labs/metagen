@@ -53,6 +53,10 @@ class ToolCall(BaseModel):
         ..., description="Arguments to pass to the tool as a JSON-compatible dictionary"
     )
 
+    # Session context for routing
+    agent_id: str = Field(default="", description="ID of the agent executing this tool")
+    session_id: str = Field(default="", description="Session ID for routing responses")
+
 
 class ToolCallResult(BaseModel):
     """Standardized result from tool call execution.
@@ -68,6 +72,10 @@ class ToolCallResult(BaseModel):
     tool_call_id: Optional[str] = Field(
         None, description="ID from the original tool call for correlation"
     )
+
+    # Session context for routing
+    agent_id: str = Field(default="", description="ID of the agent that executed this tool")
+    session_id: str = Field(default="", description="Session ID for routing responses")
 
     # Result content
     content: str = Field(..., description="The actual result content")

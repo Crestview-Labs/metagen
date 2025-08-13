@@ -110,7 +110,11 @@ async def chat_stream(request: Request, chat_request: ChatRequest) -> StreamingR
             # Use proper ErrorMessage
             from common.messages import ErrorMessage
 
-            error_msg = ErrorMessage(error=f"Stream error: {str(e)}", agent_id="SYSTEM")
+            error_msg = ErrorMessage(
+                agent_id="SYSTEM",
+                session_id=chat_request.session_id or "",
+                error=f"Stream error: {str(e)}",
+            )
             yield f"data: {json.dumps(error_msg.to_dict())}\n\n"
         finally:
             logger.info(f"🏁 Stream completed for session: {chat_request.session_id}")

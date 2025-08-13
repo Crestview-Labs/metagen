@@ -18,7 +18,9 @@ class ChatRequest(BaseModel):
     def to_message(self) -> Message:
         """Convert to appropriate Message type."""
         if isinstance(self.message, str):
-            return UserMessage(content=self.message)
+            # Use session_id from request if provided, otherwise empty string
+            session_id = self.session_id or ""
+            return UserMessage(agent_id="METAGEN", session_id=session_id, content=self.message)
         else:
             return self.message
 

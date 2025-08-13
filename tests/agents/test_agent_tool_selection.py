@@ -185,7 +185,7 @@ class TestAgentToolSelection:
         tool_results = []
         all_messages = []
 
-        user_message = UserMessage(content="What's 25 multiplied by 4?")
+        user_message = UserMessage(session_id="test-session", content="What's 25 multiplied by 4?")
         async for message in agent_with_tools.stream_chat(user_message):
             all_messages.append(message)
             if isinstance(message, ToolStartedMessage):
@@ -213,8 +213,9 @@ class TestAgentToolSelection:
         tools_used = []
 
         user_message = UserMessage(
+            session_id="test-session",
             content="Search for the current temperature in Paris, "
-            "then convert it from Celsius to Fahrenheit"
+            "then convert it from Celsius to Fahrenheit",
         )
         async for message in agent_with_tools.stream_chat(user_message):
             if isinstance(message, ToolStartedMessage):
@@ -233,7 +234,9 @@ class TestAgentToolSelection:
         """Test agent handles requests for unavailable tools gracefully."""
         response = ""
 
-        user_message = UserMessage(content="Send an email to john@example.com")
+        user_message = UserMessage(
+            session_id="test-session", content="Send an email to john@example.com"
+        )
         async for message in agent_with_tools.stream_chat(user_message):
             if isinstance(message, AgentMessage):
                 response += message.content
@@ -251,7 +254,10 @@ class TestAgentToolSelection:
         response = ""
         tools_used = []
 
-        user_message = UserMessage(content="What's the weather in New York and what's 15% of 80?")
+        user_message = UserMessage(
+            session_id="test-session",
+            content="What's the weather in New York and what's 15% of 80?",
+        )
         async for message in agent_with_tools.stream_chat(user_message):
             if isinstance(message, ToolStartedMessage):
                 tools_used.append(message.tool_name)
@@ -272,7 +278,9 @@ class TestAgentToolSelection:
         response = ""
         has_thinking = False
 
-        user_message = UserMessage(content="Calculate the sum of 1 through 10")
+        user_message = UserMessage(
+            session_id="test-session", content="Calculate the sum of 1 through 10"
+        )
         async for message in agent_with_tools.stream_chat(user_message):
             if isinstance(message, ThinkingMessage):
                 has_thinking = True
@@ -289,7 +297,9 @@ class TestAgentToolSelection:
         """Test agent recovers from tool errors."""
         response = ""
 
-        user_message = UserMessage(content="Calculate the result of 'invalid expression'")
+        user_message = UserMessage(
+            session_id="test-session", content="Calculate the result of 'invalid expression'"
+        )
         async for message in agent_with_tools.stream_chat(user_message):
             if isinstance(message, AgentMessage):
                 response += message.content
@@ -306,7 +316,8 @@ class TestAgentToolSelection:
         tools_used = []
 
         user_message = UserMessage(
-            content="I need to know about quantum physics. Should I search for it?"
+            session_id="test-session",
+            content="I need to know about quantum physics. Should I search for it?",
         )
         async for message in agent_with_tools.stream_chat(user_message):
             if isinstance(message, ToolStartedMessage):

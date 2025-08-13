@@ -86,12 +86,18 @@ class TestTurnManagement:
 
         # Complete with tool usage
         tool_call = ToolCall(
-            id="tool-1", name="web_search", arguments={"query": "Python tutorials"}
+            id="tool-1",
+            name="web_search",
+            arguments={"query": "Python tutorials"},
+            agent_id="test-agent",
+            session_id="test-session",
         )
 
         tool_result = ToolCallResult(
             tool_name="web_search",
             tool_call_id="tool-1",
+            agent_id="test-agent",
+            session_id="test-session",
             content="Found 10 Python tutorials",
             is_error=False,
             error=None,
@@ -234,6 +240,8 @@ class TestToolUsageInterface:
         tool_result = ToolCallResult(
             tool_name="get_time",
             tool_call_id=tool_id,
+            agent_id="time-agent",
+            session_id="test-session",
             content="3:45 PM PST",
             is_error=False,
             error=None,
@@ -285,6 +293,8 @@ class TestPerformanceMetrics:
                 result=ToolCallResult(
                     tool_name="complex_tool",
                     tool_call_id=tool_id,
+                    agent_id="approval-agent",
+                    session_id="test-session",
                     content="Task completed",
                     is_error=False,
                     error=None,

@@ -131,11 +131,17 @@ class TestToolExecutor:
 
         # Create an interceptor that handles the call
         async def blocking_interceptor(
-            tool_call_id: str, tool_name: str, params: dict[str, Any]
+            tool_call_id: str,
+            tool_name: str,
+            params: dict[str, Any],
+            agent_id: str,
+            session_id: str,
         ) -> Optional[ToolCallResult]:
             return ToolCallResult(
                 tool_name=tool_name,
                 tool_call_id=None,  # Will be set by executor
+                agent_id=agent_id,
+                session_id=session_id,
                 content="Intercepted!",
                 is_error=False,
                 error=None,
@@ -163,7 +169,11 @@ class TestToolExecutor:
 
         # Create an interceptor that returns None (allows execution)
         async def passthrough_interceptor(
-            tool_call_id: str, tool_name: str, params: dict[str, Any]
+            tool_call_id: str,
+            tool_name: str,
+            params: dict[str, Any],
+            agent_id: str,
+            session_id: str,
         ) -> Optional[ToolCallResult]:
             # Could do logging, validation, etc. here
             return None
@@ -186,7 +196,11 @@ class TestToolExecutor:
 
         # Create an interceptor that raises an error
         async def failing_interceptor(
-            tool_call_id: str, tool_name: str, params: dict[str, Any]
+            tool_call_id: str,
+            tool_name: str,
+            params: dict[str, Any],
+            agent_id: str,
+            session_id: str,
         ) -> Optional[ToolCallResult]:
             raise RuntimeError("Interceptor failed!")
 
@@ -206,11 +220,17 @@ class TestToolExecutor:
 
         # Add interceptor
         async def interceptor(
-            tool_call_id: str, tool_name: str, params: dict[str, Any]
+            tool_call_id: str,
+            tool_name: str,
+            params: dict[str, Any],
+            agent_id: str,
+            session_id: str,
         ) -> Optional[ToolCallResult]:
             return ToolCallResult(
                 tool_name=tool_name,
                 tool_call_id=None,  # Will be set by executor
+                agent_id=agent_id,
+                session_id=session_id,
                 content="Intercepted!",
                 is_error=False,
                 error=None,
@@ -329,11 +349,17 @@ class TestToolExecutor:
 
         # Interceptor that doesn't set tool_call_id
         async def interceptor(
-            tool_call_id: str, tool_name: str, params: dict[str, Any]
+            tool_call_id: str,
+            tool_name: str,
+            params: dict[str, Any],
+            agent_id: str,
+            session_id: str,
         ) -> Optional[ToolCallResult]:
             return ToolCallResult(
                 tool_name=tool_name,
                 tool_call_id=None,  # Will be set by executor
+                agent_id=agent_id,
+                session_id=session_id,
                 content="Intercepted",
                 is_error=False,
                 error=None,

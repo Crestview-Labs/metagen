@@ -223,6 +223,8 @@ class AgentManager:
                 # Send error to output
                 await self.unified_agent_output.put(
                     ErrorMessage(
+                        agent_id=message.agent_id,  # Use agent_id from the message
+                        session_id=message.session_id,  # Use session_id from the message
                         error=f"An error occurred: {str(e)}",
                         details={"error": str(e), "error_count": error_count},
                     )
@@ -286,7 +288,8 @@ class AgentManager:
 
                 await self.unified_agent_output.put(
                     ErrorMessage(
-                        agent_id=self.task_agent.agent_id if self.task_agent else "TASK_UNKNOWN",
+                        agent_id=task_message.agent_id,  # Use agent_id from the task message
+                        session_id=task_message.session_id,  # Use session_id from the task message
                         error=f"Task execution error: {str(e)}",
                         details={"error": str(e), "error_count": error_count},
                     )
@@ -361,8 +364,9 @@ class AgentManager:
                 # Try to send error to output queue
                 try:
                     error_message = ErrorMessage(
+                        agent_id=msg.agent_id,  # Use agent_id from the message being routed
+                        session_id=msg.session_id,  # Use session_id from the message being routed
                         error=f"Router error: {str(e)}",
-                        agent_id="ROUTER",
                         details={"error": str(e), "error_count": error_count},
                     )
                     await self.cli_output_queue.put(error_message)
@@ -521,7 +525,9 @@ class AgentManager:
         if not self._initialized:
             logger.debug("❌ Agent not initialized")
             yield ErrorMessage(
-                error="Agent not initialized. Call initialize() first.", agent_id="SYSTEM"
+                agent_id=message.agent_id,  # Use agent_id from the incoming message
+                session_id=message.session_id,  # Use session_id from the incoming message
+                error="Agent not initialized. Call initialize() first.",
             )
             return
 
@@ -561,7 +567,11 @@ class AgentManager:
 
         except Exception as e:
             logger.error(f"Error in chat_stream: {e}", exc_info=True)
-            yield ErrorMessage(error=f"Error: {str(e)}", agent_id="SYSTEM")
+            yield ErrorMessage(
+                agent_id=message.agent_id,  # Use agent_id from the incoming message
+                session_id=message.session_id,  # Use session_id from the incoming message
+                error=f"Error: {str(e)}",
+            )
 
     async def handle_tool_approval_response(
         self, approval_message: ApprovalResponseMessage
@@ -587,7 +597,12 @@ class AgentManager:
             logger.warning(f"Unknown agent_id in approval response: {approval_message.agent_id}")
 
     async def _intercept_execute_task(
-        self, tool_call_id: str, tool_name: str, parameters: dict[str, Any]
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        parameters: dict[str, Any],
+        agent_id: str,
+        session_id: str,
     ) -> ToolCallResult:
         """
         Intercept execute_task calls using FIFO coordination with single TaskExecutionAgent.
@@ -621,6 +636,8 @@ class AgentManager:
                 return ToolCallResult(
                     tool_name=tool_name,
                     tool_call_id=tool_call_id,
+                    agent_id=agent_id,
+                    session_id=session_id,
                     content="Missing required parameter: task_id",
                     is_error=True,
                     error="Missing task_id",
@@ -634,6 +651,8 @@ class AgentManager:
                 return ToolCallResult(
                     tool_name=tool_name,
                     tool_call_id=tool_call_id,
+                    agent_id=agent_id,
+                    session_id=session_id,
                     content="Memory manager not initialized",
                     is_error=True,
                     error="System not initialized",
@@ -648,6 +667,8 @@ class AgentManager:
                 return ToolCallResult(
                     tool_name=tool_name,
                     tool_call_id=tool_call_id,
+                    agent_id=agent_id,
+                    session_id=session_id,
                     content=f"Task definition not found: {task_id}",
                     is_error=True,
                     error="Task not found",
@@ -681,6 +702,8 @@ class AgentManager:
                 return ToolCallResult(
                     tool_name=tool_name,
                     tool_call_id=tool_call_id,
+                    agent_id=agent_id,
+                    session_id=session_id,
                     content="Task agent not initialized",
                     is_error=True,
                     error="Task agent not available",
@@ -693,7 +716,14 @@ class AgentManager:
 
             # Build task prompt and send to TaskExecutionAgent as UserMessage
             task_prompt = self.task_agent.build_task_prompt(context)
-            task_message = UserMessage(content=task_prompt)
+            # Create message with proper routing:
+            # - agent_id: TaskExecutionAgent's ID (the target agent)
+            # - session_id: Preserved from the original request
+            task_message = UserMessage(
+                agent_id=self.task_agent.agent_id,  # Target agent for this message
+                session_id=session_id,  # Preserved from MetaAgent's session
+                content=task_prompt,
+            )
             await self.task_agent_input.put(task_message)
 
             logger.info(f"Sent task '{task.name}' to TaskExecutionAgent, waiting for completion")
@@ -715,6 +745,8 @@ class AgentManager:
                     return ToolCallResult(
                         tool_name=tool_name,
                         tool_call_id=f"execute_task_{task_id}",
+                        agent_id=agent_id,
+                        session_id=session_id,
                         content="Task completed but result format was unexpected",
                         is_error=True,
                         error="Invalid result format from task execution",
@@ -728,6 +760,8 @@ class AgentManager:
                 return ToolCallResult(
                     tool_name=tool_name,
                     tool_call_id=tool_call_id,
+                    agent_id=agent_id,
+                    session_id=session_id,
                     content="Task completed but no result captured",
                     is_error=True,
                     error="No result captured from task execution",
@@ -746,6 +780,8 @@ class AgentManager:
             return ToolCallResult(
                 tool_name=tool_name,
                 tool_call_id=tool_call_id,
+                agent_id=agent_id,
+                session_id=session_id,
                 content=f"Task execution failed: {str(e)}",
                 is_error=True,
                 error=str(e),

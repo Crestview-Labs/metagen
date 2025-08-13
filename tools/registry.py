@@ -22,7 +22,7 @@ class ToolExecutor:
         self.mcp_servers: list[MCPServer] = []
         # Tool interceptors: tool_name -> interceptor function
         self.interceptors: dict[
-            str, Callable[[str, str, dict[str, Any]], Awaitable[Optional[ToolCallResult]]]
+            str, Callable[[str, str, dict[str, Any], str, str], Awaitable[Optional[ToolCallResult]]]
         ] = {}
 
     def register_core_tool(self, tool: BaseCoreTool) -> None:
@@ -38,7 +38,9 @@ class ToolExecutor:
     def register_interceptor(
         self,
         tool_name: str,
-        interceptor: Callable[[str, str, dict[str, Any]], Awaitable[Optional[ToolCallResult]]],
+        interceptor: Callable[
+            [str, str, dict[str, Any], str, str], Awaitable[Optional[ToolCallResult]]
+        ],
     ) -> None:
         """
         Register an interceptor for a specific tool.
@@ -70,8 +72,10 @@ class ToolExecutor:
             interceptor = self.interceptors[tool_name]
 
             try:
-                # Call the interceptor with tool_call_id
-                result = await interceptor(tool_call.id, tool_name, tool_args)
+                # Call the interceptor with tool_call_id, agent_id, and session_id
+                result = await interceptor(
+                    tool_call.id, tool_name, tool_args, tool_call.agent_id, tool_call.session_id
+                )
 
                 # If interceptor handled the call, return its result
                 if result is not None:
@@ -105,15 +109,20 @@ class ToolExecutor:
 
         try:
             result = await tool.execute(tool_call.arguments)
-            # Core tools already return ToolCallResult, ensure tool_call_id is set
+            # Core tools already return ToolCallResult, ensure IDs are set
             if result.tool_call_id is None:
                 result.tool_call_id = tool_call.id
+            # Ensure session context is set
+            result.agent_id = tool_call.agent_id
+            result.session_id = tool_call.session_id
             return result
         except Exception as e:
             logger.error(f"Core tool {tool_call.name} failed: {e}")
             return ToolCallResult(
                 tool_name=tool_call.name,
                 tool_call_id=tool_call.id,
+                agent_id=tool_call.agent_id,
+                session_id=tool_call.session_id,
                 content=f"Tool execution failed: {str(e)}",
                 is_error=True,
                 error=str(e),
@@ -136,6 +145,8 @@ class ToolExecutor:
                     return ToolCallResult(
                         tool_name=tool_call.name,
                         tool_call_id=tool_call.id,
+                        agent_id=tool_call.agent_id,
+                        session_id=tool_call.session_id,
                         content=content_text,
                         is_error=result.isError,
                         error=content_text if result.isError else None,
@@ -148,6 +159,8 @@ class ToolExecutor:
                     return ToolCallResult(
                         tool_name=tool_call.name,
                         tool_call_id=tool_call.id,
+                        agent_id=tool_call.agent_id,
+                        session_id=tool_call.session_id,
                         content=f"MCP tool execution failed: {str(e)}",
                         is_error=True,
                         error=str(e),
@@ -162,6 +175,8 @@ class ToolExecutor:
         return ToolCallResult(
             tool_name=tool_call.name,
             tool_call_id=tool_call.id,
+            agent_id=tool_call.agent_id,
+            session_id=tool_call.session_id,
             content=error_msg,
             is_error=True,
             error=error_msg,

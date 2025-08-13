@@ -142,7 +142,9 @@ class TestMetaAgent:
 
         # Mock streaming response
         async def mock_stream(*args: Any, **kwargs: Any) -> AsyncIterator[Any]:
-            yield AgentMessage(content="The weather is sunny today!")
+            yield AgentMessage(
+                agent_id="METAGEN", session_id="test-session", content="The weather is sunny today!"
+            )
 
         # Since generate_stream_with_tools is now a regular Mock,
         # we can set return_value to the async generator directly
@@ -151,7 +153,9 @@ class TestMetaAgent:
         # Process query using stream_chat
         chunks = []
         response_content = ""
-        async for chunk in meta_agent.stream_chat(create_user_message("What's the weather like?")):
+        async for chunk in meta_agent.stream_chat(
+            create_user_message("METAGEN", "test-session", "What's the weather like?")
+        ):
             chunks.append(chunk)
             if isinstance(chunk, AgentMessage):
                 response_content += chunk.content
@@ -185,17 +189,23 @@ class TestMetaAgent:
             if call_count == 1:
                 # First call - request tool use
                 yield ToolCallMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
                     tool_calls=[
                         ToolCallRequest(
                             tool_id="call_1",
                             tool_name="search_files",
                             tool_args={"pattern": "*.py"},
                         )
-                    ]
+                    ],
                 )
             else:
                 # Second call - respond with the tool results
-                yield AgentMessage(content="I found 5 Python files in the current directory.")
+                yield AgentMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
+                    content="I found 5 Python files in the current directory.",
+                )
 
         def stream_factory(*args: Any, **kwargs: Any) -> Any:
             return mock_stream()
@@ -207,7 +217,7 @@ class TestMetaAgent:
         chunks = []
         response_content = ""
         async for chunk in meta_agent_with_tools.stream_chat(
-            create_user_message("Find all Python files")
+            create_user_message("METAGEN", "test-session", "Find all Python files")
         ):
             chunks.append(chunk)
             if isinstance(chunk, AgentMessage):
@@ -264,7 +274,9 @@ class TestMetaAgent:
 
         # Should raise the exception
         with pytest.raises(Exception, match="API Error"):
-            async for chunk in meta_agent.stream_chat(create_user_message("Test query")):
+            async for chunk in meta_agent.stream_chat(
+                create_user_message("METAGEN", "test-session", "Test query")
+            ):
                 pass
 
         # Error should be recorded in conversation
@@ -282,17 +294,23 @@ class TestMetaAgent:
         # Mock streaming response
         async def mock_stream(*args: Any, **kwargs: Any) -> AsyncIterator[Any]:
             yield ToolCallMessage(
-                tool_calls=[ToolCallRequest(tool_id="call_1", tool_name="test_tool", tool_args={})]
+                agent_id="METAGEN",
+                session_id="test-session",
+                tool_calls=[ToolCallRequest(tool_id="call_1", tool_name="test_tool", tool_args={})],
             )
             # Note: LLM doesn't yield ToolResultMessage - that comes from agent executing tools
-            yield AgentMessage(content="Hello world!")
+            yield AgentMessage(
+                agent_id="METAGEN", session_id="test-session", content="Hello world!"
+            )
 
         mock_llm_client.generate_stream_with_tools.return_value = mock_stream()
 
         # Process with streaming
         events = []
         response_content = ""
-        async for event in meta_agent.stream_chat(create_user_message("Hi there")):
+        async for event in meta_agent.stream_chat(
+            create_user_message("METAGEN", "test-session", "Hi there")
+        ):
             events.append(event)
             if isinstance(event, AgentMessage):
                 response_content += event.content
@@ -346,8 +364,10 @@ class TestMetaAgent:
         # Mock streaming response suggesting task creation
         async def mock_stream(*args: Any, **kwargs: Any) -> AsyncIterator[Any]:
             yield AgentMessage(
+                agent_id="METAGEN",
+                session_id="test-session",
                 content="This seems like a complex workflow. "
-                "Would you like me to create a task for this?"
+                "Would you like me to create a task for this?",
             )
 
         mock_llm_client.generate_stream_with_tools.return_value = mock_stream()
@@ -357,8 +377,10 @@ class TestMetaAgent:
         response_content = ""
         async for chunk in meta_agent.stream_chat(
             create_user_message(
+                "METAGEN",
+                "test-session",
                 "I need to analyze all customer feedback from last month, "
-                "categorize issues, and create a report"
+                "categorize issues, and create a report",
             )
         ):
             chunks.append(chunk)
@@ -421,7 +443,9 @@ class TestMetaAgentIntegration:
         chunks_received = 0
 
         async for chunk in meta_agent.stream_chat(
-            create_user_message("Hello! Can you tell me a very short joke?")
+            create_user_message(
+                "METAGEN", "test-session", "Hello! Can you tell me a very short joke?"
+            )
         ):
             chunks_received += 1
             if isinstance(chunk, AgentMessage):
@@ -439,7 +463,9 @@ class TestMetaAgentIntegration:
         # First message
         response1 = ""
         async for chunk in meta_agent.stream_chat(
-            create_user_message("My name is TestUser and my favorite color is purple.")
+            create_user_message(
+                "METAGEN", "test-session", "My name is TestUser and my favorite color is purple."
+            )
         ):
             if isinstance(chunk, AgentMessage):
                 response1 = chunk.content
@@ -468,7 +494,7 @@ class TestMetaAgentIntegration:
         # Second message - should remember the name and color
         response2 = ""
         async for chunk in meta_agent.stream_chat(
-            create_user_message("What's my name and favorite color?")
+            create_user_message("METAGEN", "test-session", "What's my name and favorite color?")
         ):
             if isinstance(chunk, AgentMessage):
                 response2 = chunk.content
@@ -493,7 +519,9 @@ class TestMetaAgentIntegration:
         for i, turn in enumerate(turns):
             print(f"\n=== Turn {i + 1}: {turn}")
             response = ""
-            async for chunk in meta_agent.stream_chat(create_user_message(turn)):
+            async for chunk in meta_agent.stream_chat(
+                create_user_message("METAGEN", "test-session", turn)
+            ):
                 if isinstance(chunk, AgentMessage):
                     response = chunk.content
             responses.append(response)
@@ -517,7 +545,9 @@ class TestMetaAgentIntegration:
         response = ""
         error_occurred = False
 
-        async for chunk in meta_agent.stream_chat(create_user_message(long_input)):
+        async for chunk in meta_agent.stream_chat(
+            create_user_message("METAGEN", "test-session", long_input)
+        ):
             if isinstance(chunk, ErrorMessage):
                 error_occurred = True
             elif isinstance(chunk, AgentMessage):
@@ -596,7 +626,7 @@ class TestMetaAgentWithToolsIntegration:
         tool_calls = []
 
         async for chunk in meta_agent_with_tools.stream_chat(
-            create_user_message("What is 42 times 37?")
+            create_user_message("METAGEN", "test-session", "What is 42 times 37?")
         ):
             if isinstance(chunk, ToolStartedMessage):
                 tool_calls.append(chunk.tool_name)
@@ -614,7 +644,11 @@ class TestMetaAgentWithToolsIntegration:
         tool_calls = []
 
         async for chunk in meta_agent_with_tools.stream_chat(
-            create_user_message("What's the weather in Paris? Also calculate 15% tip on $85.")
+            create_user_message(
+                "METAGEN",
+                "test-session",
+                "What's the weather in Paris? Also calculate 15% tip on $85.",
+            )
         ):
             if isinstance(chunk, ToolStartedMessage):
                 tool_calls.append(chunk.tool_name)
@@ -636,7 +670,9 @@ class TestMetaAgentWithToolsIntegration:
         tool_calls = []
 
         async for chunk in meta_agent_with_tools.stream_chat(
-            create_user_message("Calculate the result of dividing by zero: 10/0")
+            create_user_message(
+                "METAGEN", "test-session", "Calculate the result of dividing by zero: 10/0"
+            )
         ):
             if isinstance(chunk, ToolStartedMessage):
                 tool_calls.append(chunk.tool_name)
@@ -658,7 +694,9 @@ class TestMetaAgentWithToolsIntegration:
         tool_calls = []
 
         async for chunk in meta_agent_with_tools.stream_chat(
-            create_user_message("What is the capital of France? No calculations needed.")
+            create_user_message(
+                "METAGEN", "test-session", "What is the capital of France? No calculations needed."
+            )
         ):
             if isinstance(chunk, ToolStartedMessage):
                 tool_calls.append(chunk.tool_name)
@@ -678,11 +716,13 @@ class TestMetaAgentWithToolsIntegration:
 
         async for chunk in meta_agent_with_tools.stream_chat(
             create_user_message(
+                "METAGEN",
+                "test-session",
                 "Please do all of these at once: "
                 "1) Calculate 25 * 4, "
                 "2) Calculate 100 / 5, "
                 "3) Calculate 15 + 85, "
-                "4) Get weather for London"
+                "4) Get weather for London",
             )
         ):
             if isinstance(chunk, ToolStartedMessage):
@@ -816,12 +856,16 @@ class TestMetaAgentToolApproval:
                 # Approve weather, reject search
                 if tool_name == "get_weather":
                     approval = ApprovalResponseMessage(
+                        agent_id="test-meta-agent-approval",
+                        session_id="test-session",
                         tool_id=tool_id,
                         decision=ApprovalDecision.APPROVED,
                         feedback="Approved for testing",
                     )
                 else:  # web_search
                     approval = ApprovalResponseMessage(
+                        agent_id="test-meta-agent-approval",
+                        session_id="test-session",
                         tool_id=tool_id,
                         decision=ApprovalDecision.REJECTED,
                         feedback="Search not needed for this test",
@@ -839,10 +883,12 @@ class TestMetaAgentToolApproval:
         try:
             # Create the user message
             user_message = create_user_message(
+                "METAGEN",
+                "test-session",
                 "Please do these tasks: "
                 "1) Calculate 50 * 2 (should be auto-approved), "
                 "2) Get weather for Tokyo (needs approval), "
-                "3) Search web for 'quantum computing' (needs approval)"
+                "3) Search web for 'quantum computing' (needs approval)",
             )
             async for chunk in meta_agent_with_approval.stream_chat(user_message):
                 # Debug: log message types

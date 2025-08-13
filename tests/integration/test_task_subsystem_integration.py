@@ -270,7 +270,11 @@ class TestTaskSubsystemIntegration:
 
         # Create a test interceptor that simulates task execution
         async def test_interceptor(
-            tool_call_id: str, tool_name: str, params: dict[str, Any]
+            tool_call_id: str,
+            tool_name: str,
+            params: dict[str, Any],
+            agent_id: str,
+            session_id: str,
         ) -> Optional[ToolCallResult]:
             if tool_name == "execute_task":
                 # Verify we get the right parameters
@@ -281,6 +285,8 @@ class TestTaskSubsystemIntegration:
                 return ToolCallResult(
                     tool_name="execute_task",
                     tool_call_id=f"task_{task_id}",
+                    agent_id=agent_id,
+                    session_id=session_id,
                     content="Task executed successfully: echoed Hello, World!",
                     is_error=False,
                     error=None,

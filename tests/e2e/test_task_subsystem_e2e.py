@@ -80,12 +80,16 @@ class TestTaskSubsystemE2E:
             if call_count == 1:
                 # First call: agent responds with text and tool call
                 yield AgentMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
                     content="I'll create a reusable task for analyzing CSV files and summaries.",
                     final=False,  # Not final yet, tool call coming
                 )
 
                 # Then it decides to call create_task tool
                 yield ToolCallMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
                     tool_calls=[
                         ToolCallRequest(
                             tool_id="call_001",
@@ -125,11 +129,13 @@ class TestTaskSubsystemE2E:
                                 }
                             },
                         )
-                    ]
+                    ],
                 )
             elif call_count == 2:
                 # Second call: after tool execution, agent responds with confirmation
                 yield AgentMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
                     content=(
                         "I've successfully created the CSV Analyzer task. This reusable task can "
                         "analyze CSV files and generate summaries with a configurable word limit."
@@ -144,7 +150,10 @@ class TestTaskSubsystemE2E:
             side_effect=mock_llm_stream,
         ):
             # Send user message
-            user_msg = UserMessage(content="I need to analyze CSV files and generate summaries")
+            user_msg = UserMessage(
+                session_id="test-session",
+                content="I need to analyze CSV files and generate summaries",
+            )
 
             # Collect all responses
             responses = []
@@ -252,10 +261,15 @@ class TestTaskSubsystemE2E:
 
             if meta_call_count == 1:
                 yield AgentMessage(
-                    content="I'll execute the Test Executor task with your message.", final=False
+                    agent_id="METAGEN",
+                    session_id="test-session",
+                    content="I'll execute the Test Executor task with your message.",
+                    final=False,
                 )
 
                 yield ToolCallMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
                     tool_calls=[
                         ToolCallRequest(
                             tool_id="call_exec_001",
@@ -265,12 +279,14 @@ class TestTaskSubsystemE2E:
                                 "input_values": {"message": "Hello from test!"},
                             },
                         )
-                    ]
+                    ],
                 )
             elif meta_call_count == 2:
                 # After task execution completes, this is called with tool results
                 # The MetaAgent needs to respond after receiving the execute_task result
                 yield AgentMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
                     content=(
                         "The Test Executor task has been executed successfully. "
                         "The task echoed your message: 'Hello from test!' as requested."
@@ -280,12 +296,24 @@ class TestTaskSubsystemE2E:
 
         # Mock TaskExecutionAgent LLM response
         async def mock_task_llm_stream(*args: Any, **kwargs: Any) -> AsyncGenerator[Message, None]:
-            yield AgentMessage(content="Processing the echo task...", final=False)
+            yield AgentMessage(
+                agent_id="TASK_EXECUTOR",
+                session_id="test-session",
+                content="Processing the echo task...",
+                final=False,
+            )
 
-            yield AgentMessage(content="Echoing message: Hello from test!", final=False)
+            yield AgentMessage(
+                agent_id="TASK_EXECUTOR",
+                session_id="test-session",
+                content="Echoing message: Hello from test!",
+                final=False,
+            )
 
             # The final message content is what gets captured as the task result
             yield AgentMessage(
+                agent_id="TASK_EXECUTOR",
+                session_id="test-session",
                 content="Task completed successfully. The echoed message is: Hello from test!",
                 final=True,  # This is critical - marks the end of task execution
             )
@@ -304,7 +332,10 @@ class TestTaskSubsystemE2E:
             ),
         ):
             # Send message to execute task
-            user_msg = UserMessage(content="Execute the test task with message 'Hello from test!'")
+            user_msg = UserMessage(
+                session_id="test-session",
+                content="Execute the test task with message 'Hello from test!'",
+            )
 
             responses = []
             async for msg in agent_manager.chat_stream(user_msg):
@@ -364,10 +395,15 @@ class TestTaskSubsystemE2E:
 
             if create_call_count == 1:
                 yield AgentMessage(
-                    content="I'll create a data processing task for you.", final=False
+                    agent_id="METAGEN",
+                    session_id="test-session",
+                    content="I'll create a data processing task for you.",
+                    final=False,
                 )
 
                 yield ToolCallMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
                     tool_calls=[
                         ToolCallRequest(
                             tool_id="call_create",
@@ -406,12 +442,15 @@ class TestTaskSubsystemE2E:
                                 }
                             },
                         )
-                    ]
+                    ],
                 )
             elif create_call_count == 2:
                 # After tool execution
                 yield AgentMessage(
-                    content="I've successfully created the Data Processor task for you.", final=True
+                    agent_id="METAGEN",
+                    session_id="test-session",
+                    content="I've successfully created the Data Processor task for you.",
+                    final=True,
                 )
 
         # Create task
@@ -422,7 +461,9 @@ class TestTaskSubsystemE2E:
         ):
             responses = []
             async for msg in agent_manager.chat_stream(
-                UserMessage(content="Create a task for processing data files")
+                UserMessage(
+                    session_id="test-session", content="Create a task for processing data files"
+                )
             ):
                 responses.append(msg)
                 if isinstance(msg, ToolErrorMessage):
@@ -455,18 +496,27 @@ class TestTaskSubsystemE2E:
             list_call_count += 1
 
             if list_call_count == 1:
-                yield AgentMessage(content="Let me list all available tasks for you.", final=False)
+                yield AgentMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
+                    content="Let me list all available tasks for you.",
+                    final=False,
+                )
 
                 yield ToolCallMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
                     tool_calls=[
                         ToolCallRequest(
                             tool_id="call_list", tool_name="list_tasks", tool_args={"limit": 50}
                         )
-                    ]
+                    ],
                 )
             elif list_call_count == 2:
                 # After tool execution
                 yield AgentMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
                     content=(
                         "Here are the available tasks. I found the Data Processor task "
                         "that was just created."
@@ -482,7 +532,7 @@ class TestTaskSubsystemE2E:
         ):
             list_responses = []
             async for msg in agent_manager.chat_stream(
-                UserMessage(content="What tasks are available?")
+                UserMessage(session_id="test-session", content="What tasks are available?")
             ):
                 list_responses.append(msg)
                 msg_type = type(msg).__name__
@@ -564,9 +614,16 @@ class TestTaskSubsystemE2E:
             invalid_call_count += 1
 
             if invalid_call_count == 1:
-                yield AgentMessage(content="I'll execute the Strict Task.", final=False)
+                yield AgentMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
+                    content="I'll execute the Strict Task.",
+                    final=False,
+                )
 
                 yield ToolCallMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
                     tool_calls=[
                         ToolCallRequest(
                             tool_id="call_invalid",
@@ -576,11 +633,13 @@ class TestTaskSubsystemE2E:
                                 "input_values": {},  # Missing required parameter
                             },
                         )
-                    ]
+                    ],
                 )
             elif invalid_call_count == 2:
                 # After getting error about missing params
                 yield AgentMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
                     content=(
                         "I see that the Strict Task requires a 'required_param' parameter "
                         "that wasn't "
@@ -596,7 +655,7 @@ class TestTaskSubsystemE2E:
         ):
             responses = []
             async for msg in agent_manager.chat_stream(
-                UserMessage(content="Execute the strict task")
+                UserMessage(session_id="test-session", content="Execute the strict task")
             ):
                 responses.append(msg)
 
@@ -675,47 +734,68 @@ class TestTaskSubsystemE2E:
             if meta_multi_call_count == 1:
                 # First call: execute first task
                 yield AgentMessage(
-                    content="I'll execute all three tasks for you in order.", final=False
+                    agent_id="METAGEN",
+                    session_id="test-session",
+                    content="I'll execute all three tasks for you in order.",
+                    final=False,
                 )
 
                 yield ToolCallMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
                     tool_calls=[
                         ToolCallRequest(
                             tool_id="call_task_0",
                             tool_name="execute_task",
                             tool_args={"task_id": task_ids[0], "input_values": {"item": "Item 1"}},
                         )
-                    ]
+                    ],
                 )
             elif meta_multi_call_count == 2:
                 # After first task result, execute second task
-                yield AgentMessage(content="Task 1 completed. Now executing Task 2.", final=False)
+                yield AgentMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
+                    content="Task 1 completed. Now executing Task 2.",
+                    final=False,
+                )
 
                 yield ToolCallMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
                     tool_calls=[
                         ToolCallRequest(
                             tool_id="call_task_1",
                             tool_name="execute_task",
                             tool_args={"task_id": task_ids[1], "input_values": {"item": "Item 2"}},
                         )
-                    ]
+                    ],
                 )
             elif meta_multi_call_count == 3:
                 # After second task result, execute third task
-                yield AgentMessage(content="Task 2 completed. Now executing Task 3.", final=False)
+                yield AgentMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
+                    content="Task 2 completed. Now executing Task 3.",
+                    final=False,
+                )
 
                 yield ToolCallMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
                     tool_calls=[
                         ToolCallRequest(
                             tool_id="call_task_2",
                             tool_name="execute_task",
                             tool_args={"task_id": task_ids[2], "input_values": {"item": "Item 3"}},
                         )
-                    ]
+                    ],
                 )
             elif meta_multi_call_count == 4:
                 # After all tasks complete, send final summary
                 yield AgentMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
                     content=(
                         "All three tasks have been executed successfully in order:\n"
                         "- Task 1: Processed Item 1\n"
@@ -735,13 +815,23 @@ class TestTaskSubsystemE2E:
             task_execution_count += 1
             current_task = task_execution_count
 
-            yield AgentMessage(content=f"Executing Task {current_task}...", final=False)
-
             yield AgentMessage(
-                content=f"Processing Item {current_task} for Task {current_task}", final=False
+                agent_id="TASK_EXECUTOR",
+                session_id="test-session",
+                content=f"Executing Task {current_task}...",
+                final=False,
             )
 
             yield AgentMessage(
+                agent_id="TASK_EXECUTOR",
+                session_id="test-session",
+                content=f"Processing Item {current_task} for Task {current_task}",
+                final=False,
+            )
+
+            yield AgentMessage(
+                agent_id="TASK_EXECUTOR",
+                session_id="test-session",
                 content=(
                     f"Task {current_task} completed successfully! "
                     f"Result: Processed Item {current_task}"
@@ -763,7 +853,7 @@ class TestTaskSubsystemE2E:
         ):
             responses = []
             async for msg in agent_manager.chat_stream(
-                UserMessage(content="Execute all three tasks")
+                UserMessage(session_id="test-session", content="Execute all three tasks")
             ):
                 responses.append(msg)
 
@@ -804,11 +894,12 @@ class TestTaskSubsystemRealLLM:
 
         # Send user message asking to create a task
         user_msg = UserMessage(
+            session_id="test-session",
             content=(
                 "Create a reusable task called 'CSV Analyzer' that takes a file_path parameter "
                 "(required) and max_words parameter (optional, default 100). It should analyze "
                 "CSV files and generate summaries."
-            )
+            ),
         )
 
         # Collect all responses
@@ -851,10 +942,11 @@ class TestTaskSubsystemRealLLM:
         create_responses = []
         async for msg in agent_manager.chat_stream(
             UserMessage(
+                session_id="test-session",
                 content=(
                     "Create a task called 'Echo Task' that takes a message parameter and "
                     "echoes it back. The task should simply repeat whatever message is provided."
-                )
+                ),
             )
         ):
             create_responses.append(msg)
@@ -874,7 +966,9 @@ class TestTaskSubsystemRealLLM:
         exec_responses = []
         async for msg in agent_manager.chat_stream(
             UserMessage(
-                content="Execute the Echo Task with the message 'Hello from real LLM test!'"
+                agent_id="METAGEN",
+                session_id="test-session",
+                content="Execute the Echo Task with the message 'Hello from real LLM test!'",
             )
         ):
             exec_responses.append(msg)
@@ -913,11 +1007,12 @@ class TestTaskSubsystemRealLLM:
         create_responses = []
         async for msg in agent_manager.chat_stream(
             UserMessage(
+                session_id="test-session",
                 content=(
                     "Create a task called 'Data Processor' that processes data files. "
                     "It should take input_file and output_file parameters (both required strings) "
                     "and return a status string."
-                )
+                ),
             )
         ):
             create_responses.append(msg)
@@ -935,7 +1030,9 @@ class TestTaskSubsystemRealLLM:
 
         # Now list tasks
         list_responses = []
-        async for msg in agent_manager.chat_stream(UserMessage(content="List all available tasks")):
+        async for msg in agent_manager.chat_stream(
+            UserMessage(session_id="test-session", content="List all available tasks")
+        ):
             list_responses.append(msg)
             msg_type = type(msg).__name__
             msg_content = getattr(msg, "content", "no content")[:100]
@@ -970,11 +1067,12 @@ class TestTaskSubsystemRealLLM:
         create_responses = []
         async for msg in agent_manager.chat_stream(
             UserMessage(
+                session_id="test-session",
                 content=(
                     "Create a task called 'Validation Test Task' that requires a 'required_param' "
                     "parameter and has an optional 'optional_param' parameter with default value "
                     "'default_value'."
-                )
+                ),
             )
         ):
             create_responses.append(msg)
@@ -993,7 +1091,7 @@ class TestTaskSubsystemRealLLM:
         # Try to execute without providing required params
         exec_responses = []
         async for msg in agent_manager.chat_stream(
-            UserMessage(content="Execute the Validation Test Task")
+            UserMessage(session_id="test-session", content="Execute the Validation Test Task")
         ):
             exec_responses.append(msg)
             msg_type = type(msg).__name__
@@ -1029,10 +1127,12 @@ class TestTaskSubsystemRealLLM:
             create_responses = []
             async for msg in agent_manager.chat_stream(
                 UserMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
                     content=(
                         f"Create a task called 'Simple Task {i + 1}' that processes an item "
                         f"parameter and responds with 'Processed [item] in task {i + 1}'."
-                    )
+                    ),
                 )
             ):
                 create_responses.append(msg)
@@ -1047,10 +1147,11 @@ class TestTaskSubsystemRealLLM:
         exec_responses = []
         async for msg in agent_manager.chat_stream(
             UserMessage(
+                session_id="test-session",
                 content=(
                     "Execute all three Simple Tasks in order. For Simple Task 1 use item='Apple', "
                     "for Simple Task 2 use item='Banana', and for Simple Task 3 use item='Cherry'."
-                )
+                ),
             )
         ):
             exec_responses.append(msg)
@@ -1104,11 +1205,12 @@ class TestTaskSubsystemRealLLM:
         responses = []
         async for msg in agent_manager.chat_stream(
             UserMessage(
+                session_id="test-session",
                 content=(
                     "Create a task called 'Code Analyzer' that takes a file_path parameter "
                     "and returns code metrics like lines of code, number of functions, "
                     "and complexity"
-                )
+                ),
             )
         ):
             responses.append(msg)
@@ -1130,7 +1232,10 @@ class TestTaskSubsystemRealLLM:
         # Now execute the task
         exec_responses = []
         async for msg in agent_manager.chat_stream(
-            UserMessage(content="Use the Code Analyzer task to analyze a file at /example/test.py")
+            UserMessage(
+                session_id="test-session",
+                content="Use the Code Analyzer task to analyze a file at /example/test.py",
+            )
         ):
             exec_responses.append(msg)
             msg_type = type(msg).__name__

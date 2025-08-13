@@ -147,6 +147,8 @@ class BaseCoreTool(BaseTool):
             return ToolCallResult(
                 tool_name=self.name,
                 tool_call_id=None,  # Will be set by executor
+                agent_id="",  # Will be set by executor
+                session_id="",  # Will be set by executor
                 content=output.model_dump_json(),
                 is_error=False,
                 error=None,
@@ -161,6 +163,8 @@ class BaseCoreTool(BaseTool):
             return ToolCallResult(
                 tool_name=self.name,
                 tool_call_id=None,  # Will be set by executor
+                agent_id="",  # Will be set by executor
+                session_id="",  # Will be set by executor
                 content=error_msg,
                 is_error=True,
                 error=str(e),

@@ -106,7 +106,7 @@ Input values provided:
         prompt += "\nPlease execute this task now using available tools."
         return prompt
 
-    async def build_context(self, query: str) -> list[Message]:
+    async def build_context(self, query: str, session_id: str = "") -> list[Message]:
         """
         Build context for task execution.
 
@@ -117,17 +117,23 @@ Input values provided:
         # Add system message about being a task execution agent
         context.append(
             SystemMessage(
+                agent_id=self.agent_id,
+                session_id=session_id,
                 content=(
                     "You are a TaskExecutionAgent. Focus on executing the current task "
                     "efficiently using available tools."
-                )
+                ),
             )
         )
 
         # Add current task context if available
         if self.current_task_context:
             context.append(
-                SystemMessage(content=f"Current task ID: {self.current_task_context.task_id}")
+                SystemMessage(
+                    agent_id=self.agent_id,
+                    session_id=session_id,
+                    content=f"Current task ID: {self.current_task_context.task_id}",
+                )
             )
 
         # TODO: Add relevant conversation history from memory_manager if needed
@@ -172,6 +178,8 @@ Input values provided:
                     tool_name="execute_task",
                     # Use original tool_call_id
                     tool_call_id=self.current_task_context.tool_call_id,
+                    agent_id=self.agent_id,
+                    session_id=message.session_id,
                     content=f"Task executed successfully. Result: {final_response}",
                     is_error=False,
                     error=None,
@@ -191,6 +199,8 @@ Input values provided:
                     tool_name="execute_task",
                     # Use original tool_call_id
                     tool_call_id=self.current_task_context.tool_call_id,
+                    agent_id=self.agent_id,
+                    session_id=message.session_id,
                     content="Task execution failed or produced no result",
                     is_error=True,
                     error="Task execution failed",
@@ -207,6 +217,7 @@ Input values provided:
             assert result.tool_call_id, "tool_call_id must not be None or empty"
             yield ToolResultMessage(
                 agent_id=self.agent_id,  # Set agent_id properly
+                session_id=message.session_id,  # session_id is a required field on Message
                 tool_id=result.tool_call_id,
                 tool_name=result.tool_name,
                 result=result,  # Pass the complete ToolCallResult object

@@ -179,9 +179,10 @@ async def test_approval_via_chat_message(client: httpx.AsyncClient) -> None:
 
         # Create proper ApprovalResponseMessage object
         approval_msg = ApprovalResponseMessage(
+            agent_id=approval_request.agent_id,
+            session_id="test-session",
             tool_id=approval_request.tool_id,
             decision=ApprovalDecision.APPROVED,
-            agent_id=approval_request.agent_id,
         )
 
         # Send approval through chat stream with the message object as dict

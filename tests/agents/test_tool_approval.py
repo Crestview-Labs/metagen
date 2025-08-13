@@ -38,10 +38,11 @@ class TestToolApprovalDataClasses:
     def test_tool_approval_request_creation(self) -> None:
         """Test creating an ApprovalRequestMessage."""
         request = ApprovalRequestMessage(
+            agent_id="METAGEN",
+            session_id="test-session",
             tool_id="test-123",
             tool_name="write_file",
             tool_args={"path": "/tmp/test.txt", "content": "hello"},
-            agent_id="METAGEN",
         )
 
         assert request.tool_id == "test-123"
@@ -52,10 +53,11 @@ class TestToolApprovalDataClasses:
     def test_tool_approval_request_to_dict(self) -> None:
         """Test converting ApprovalRequestMessage to dict."""
         request = ApprovalRequestMessage(
+            agent_id="METAGEN",
+            session_id="test-session",
             tool_id="test-123",
             tool_name="write_file",
             tool_args={"path": "/tmp/test.txt"},
-            agent_id="METAGEN",
         )
 
         data = request.model_dump()
@@ -68,10 +70,11 @@ class TestToolApprovalDataClasses:
     def test_tool_approval_response_creation(self) -> None:
         """Test creating an ApprovalResponseMessage."""
         response = ApprovalResponseMessage(
+            agent_id="METAGEN",
+            session_id="test-session",
             tool_id="test-123",
             decision=ApprovalDecision.APPROVED,
             feedback=None,
-            agent_id="METAGEN",
         )
 
         assert response.tool_id == "test-123"
@@ -82,10 +85,11 @@ class TestToolApprovalDataClasses:
     def test_tool_approval_response_with_rejection(self) -> None:
         """Test creating a rejection response with feedback."""
         response = ApprovalResponseMessage(
+            agent_id="METAGEN",
+            session_id="test-session",
             tool_id="test-123",
             decision=ApprovalDecision.REJECTED,
             feedback="This operation seems unsafe",
-            agent_id="METAGEN",
         )
 
         assert response.tool_id == "test-123"
@@ -185,7 +189,10 @@ class TestBaseAgentToolApprovalMocked:
 
         # Create approval response
         approval_response = ApprovalResponseMessage(
-            tool_id="tool-123", decision=ApprovalDecision.APPROVED, agent_id="METAGEN"
+            agent_id="METAGEN",
+            session_id="test-session",
+            tool_id="tool-123",
+            decision=ApprovalDecision.APPROVED,
         )
 
         # Process the approval (no events yielded in new implementation)
@@ -223,10 +230,11 @@ class TestBaseAgentToolApprovalMocked:
 
         # Create rejection response
         approval_response = ApprovalResponseMessage(
+            agent_id="METAGEN",
+            session_id="test-session",
             tool_id="tool-123",
             decision=ApprovalDecision.REJECTED,
             feedback="Too dangerous",
-            agent_id="METAGEN",
         )
 
         # Process the rejection (no events yielded in new implementation)
@@ -251,7 +259,10 @@ class TestBaseAgentToolApprovalMocked:
 
         # Create approval response
         approval_response = ApprovalResponseMessage(
-            tool_id="tool-123", decision=ApprovalDecision.APPROVED, agent_id="METAGEN"
+            agent_id="METAGEN",
+            session_id="test-session",
+            tool_id="tool-123",
+            decision=ApprovalDecision.APPROVED,
         )
 
         # Process the late approval - should log error but not crash
@@ -400,35 +411,59 @@ class TestBaseAgentToolApprovalPublicAPI:
 
             if "write" in last_msg.lower() and not has_tool_results:
                 # First call - return a write_file tool call
-                yield AgentMessage(content="I'll write that file for you.")
+                yield AgentMessage(
+                    agent_id="test-agent",
+                    session_id="test-session",
+                    content="I'll write that file for you.",
+                )
                 yield ToolCallMessage(
+                    agent_id="test-agent",
+                    session_id="test-session",
                     tool_calls=[
                         ToolCallRequest(
                             tool_id="write-123",
                             tool_name="write_file",
                             tool_args={"path": "/tmp/test.txt", "content": "test"},
                         )
-                    ]
+                    ],
                 )
             elif "read" in last_msg.lower() and not has_tool_results:
                 # First call - return a read_file tool call
-                yield AgentMessage(content="I'll read that file for you.")
+                yield AgentMessage(
+                    agent_id="test-agent",
+                    session_id="test-session",
+                    content="I'll read that file for you.",
+                )
                 yield ToolCallMessage(
+                    agent_id="test-agent",
+                    session_id="test-session",
                     tool_calls=[
                         ToolCallRequest(
                             tool_id="read-123",
                             tool_name="read_file",
                             tool_args={"path": "/tmp/test.txt"},
                         )
-                    ]
+                    ],
                 )
             elif has_tool_results:
                 # Second call after tool execution - just return a final message
-                yield AgentMessage(content="Operation completed successfully.")
+                yield AgentMessage(
+                    agent_id="test-agent",
+                    session_id="test-session",
+                    content="Operation completed successfully.",
+                )
             else:
-                yield AgentMessage(content="I don't understand.")
+                yield AgentMessage(
+                    agent_id="test-agent", session_id="test-session", content="I don't understand."
+                )
 
-            yield UsageMessage(input_tokens=10, output_tokens=20, total_tokens=30)
+            yield UsageMessage(
+                agent_id="test-agent",
+                session_id="test-session",
+                input_tokens=10,
+                output_tokens=20,
+                total_tokens=30,
+            )
 
         # Set the mock to return the async generator
         mock_llm_client.generate_stream_with_tools = mock_generate_stream
@@ -471,9 +506,10 @@ class TestBaseAgentToolApprovalPublicAPI:
                         )
                         # Process the approval directly (simulating what stream_chat does)
                         approval = ApprovalResponseMessage(
+                            agent_id=simple_agent.agent_id,
+                            session_id="test-session",
                             tool_id=msg.tool_id,
                             decision=ApprovalDecision.APPROVED,
-                            agent_id=simple_agent.agent_id,
                         )
                         logger.info("Sending approval response...")
                         await simple_agent._process_approval_response(approval)
@@ -486,7 +522,11 @@ class TestBaseAgentToolApprovalPublicAPI:
 
         try:
             # Send a message that will trigger write_file tool
-            user_msg = UserMessage(content="Write test content to a file")
+            user_msg = UserMessage(
+                agent_id="test-agent",
+                session_id="test-session",
+                content="Write test content to a file",
+            )
             logger.info("Sending user message to stream_chat...")
             async for msg in simple_agent.stream_chat(user_msg):
                 logger.info(f"Received message: {type(msg).__name__}")
@@ -538,7 +578,11 @@ class TestBaseAgentToolApprovalPublicAPI:
         messages_received = []
 
         # Send a message that will trigger read_file tool
-        user_msg = UserMessage(content="Read the file at /tmp/test.txt")
+        user_msg = UserMessage(
+            agent_id="test-agent",
+            session_id="test-session",
+            content="Read the file at /tmp/test.txt",
+        )
         async for msg in simple_agent.stream_chat(user_msg):
             messages_received.append(msg)
 
@@ -560,17 +604,22 @@ class TestBaseAgentToolApprovalPublicAPI:
         messages_received = []
 
         # Send a message that will trigger write_file tool
-        user_msg = UserMessage(content="Write dangerous content to system file")
+        user_msg = UserMessage(
+            agent_id="test-agent",
+            session_id="test-session",
+            content="Write dangerous content to system file",
+        )
         async for msg in simple_agent.stream_chat(user_msg):
             messages_received.append(msg)
 
             # If we get an approval request, reject it
             if isinstance(msg, ApprovalRequestMessage):
                 rejection = ApprovalResponseMessage(
+                    agent_id=simple_agent.agent_id,
+                    session_id="test-session",
                     tool_id=msg.tool_id,
                     decision=ApprovalDecision.REJECTED,
                     feedback="Too dangerous",
-                    agent_id=simple_agent.agent_id,
                 )
                 # Process rejection
                 async for response_msg in simple_agent.stream_chat(rejection):
@@ -639,7 +688,7 @@ class TestToolApprovalEndToEnd:
         # Stream the response
         responses = []
         logger.info(f"Starting to stream responses for message: {message}")
-        user_message = UserMessage(content=message)
+        user_message = UserMessage(agent_id="METAGEN", session_id="test-session", content=message)
 
         saw_tool_started = False
         stream_count = 0
@@ -674,7 +723,10 @@ class TestToolApprovalEndToEnd:
 
                 # Send approval with the actual tool_id
                 approval = ApprovalResponseMessage(
-                    tool_id=actual_tool_id, decision=ApprovalDecision.APPROVED, agent_id="METAGEN"
+                    agent_id="METAGEN",
+                    session_id="test-session",
+                    tool_id=actual_tool_id,
+                    decision=ApprovalDecision.APPROVED,
                 )
                 logger.info(f"Creating approval response: {approval}")
                 logger.info("Sending approval through chat_stream...")
@@ -743,7 +795,7 @@ class TestToolApprovalEndToEnd:
 
         # Stream the response
         responses = []
-        user_message = UserMessage(content=message)
+        user_message = UserMessage(agent_id="METAGEN", session_id="test-session", content=message)
         async for response in agent_manager.chat_stream(user_message):
             responses.append(response)
             logger.info(f"Response type: {response.type}")
@@ -755,10 +807,11 @@ class TestToolApprovalEndToEnd:
 
                 # Send rejection with the actual tool_id
                 rejection = ApprovalResponseMessage(
+                    agent_id="METAGEN",
+                    session_id="test-session",
                     tool_id=actual_tool_id,
                     decision=ApprovalDecision.REJECTED,
                     feedback="Not allowed in test environment",
-                    agent_id="METAGEN",
                 )
                 await agent_manager.handle_tool_approval_response(rejection)
                 rejection_sent = True
@@ -794,7 +847,7 @@ class TestToolApprovalEndToEnd:
         approval_requests: list[ApprovalRequestMessage] = []
         execution_events: list[ToolStartedMessage] = []
 
-        user_message = UserMessage(content=message)
+        user_message = UserMessage(agent_id="METAGEN", session_id="test-session", content=message)
         async for response in agent_manager.chat_stream(user_message):
             responses.append(response)
 
@@ -804,9 +857,10 @@ class TestToolApprovalEndToEnd:
                 # Approve the list_tasks tool when requested
                 if response.tool_name == "list_tasks":
                     approval = ApprovalResponseMessage(
+                        agent_id="METAGEN",
+                        session_id="test-session",
                         tool_id=response.tool_id,
                         decision=ApprovalDecision.APPROVED,
-                        agent_id="METAGEN",
                     )
                     await agent_manager.handle_tool_approval_response(approval)
 
@@ -875,16 +929,17 @@ class TestToolApprovalEndToEnd:
         message = "Use the list_tasks tool"
 
         # Run the command
-        user_message = UserMessage(content=message)
+        user_message = UserMessage(agent_id="METAGEN", session_id="test-session", content=message)
         async for response in agent_manager.chat_stream(user_message):
             # When we see approval request, send approval
             if isinstance(response, ApprovalRequestMessage) and not approval_sent:
                 actual_tool_id = response.tool_id
                 if actual_tool_id:
                     approval = ApprovalResponseMessage(
+                        agent_id="METAGEN",
+                        session_id="test-session",
                         tool_id=actual_tool_id,
                         decision=ApprovalDecision.APPROVED,
-                        agent_id="METAGEN",
                     )
                     await agent_manager.handle_tool_approval_response(approval)
                     approval_sent = True
@@ -942,19 +997,21 @@ class TestToolApprovalEndToEnd:
                             # Approve file creation
                             await agent_manager.handle_tool_approval_response(
                                 ApprovalResponseMessage(
+                                    agent_id="METAGEN",
+                                    session_id="test-session",
                                     tool_id=tool_id,
                                     decision=ApprovalDecision.APPROVED,
-                                    agent_id="METAGEN",
                                 )
                             )
                         else:
                             # Reject other non-auto-approved operations
                             await agent_manager.handle_tool_approval_response(
                                 ApprovalResponseMessage(
+                                    agent_id="METAGEN",
+                                    session_id="test-session",
                                     tool_id=tool_id,
                                     decision=ApprovalDecision.REJECTED,
                                     feedback="Not allowed in test",
-                                    agent_id="METAGEN",
                                 )
                             )
                         break
@@ -963,7 +1020,9 @@ class TestToolApprovalEndToEnd:
             approval_task = asyncio.create_task(handle_approvals())
 
             # Stream the response
-            user_message = UserMessage(content=message)
+            user_message = UserMessage(
+                agent_id="METAGEN", session_id="test-session", content=message
+            )
             async for response in agent_manager.chat_stream(user_message):
                 responses.append(response)
 

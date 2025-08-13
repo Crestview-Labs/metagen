@@ -65,7 +65,9 @@ class TestMetaAgentIntegration:
             responses = []
             from common.messages import AgentMessage
 
-            user_message = UserMessage(content="Hello! Can you help me test the system?")
+            user_message = UserMessage(
+                session_id="test-session", content="Hello! Can you help me test the system?"
+            )
             async for event in meta_agent.stream_chat(user_message):
                 responses.append(event)
                 logger.info(f"Agent event: {type(event).__name__}")
@@ -120,7 +122,7 @@ class TestMetaAgentIntegration:
             # Send a message
             test_query = "My name is TestUser and I like pizza"
             responses = []
-            user_message = UserMessage(content=test_query)
+            user_message = UserMessage(session_id="test-session", content=test_query)
             async for event in meta_agent.stream_chat(user_message):
                 responses.append(event)
 

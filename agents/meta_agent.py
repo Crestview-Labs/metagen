@@ -172,11 +172,23 @@ task creation and direct tool usage."""
                 for turn in turns:
                     # Always add user query if non-empty
                     if turn.user_query and turn.user_query.strip():
-                        messages.append(UserMessage(content=turn.user_query))
+                        messages.append(
+                            UserMessage(
+                                agent_id=self.agent_id,
+                                session_id="",  # Historical messages don't have session_id
+                                content=turn.user_query,
+                            )
+                        )
 
                     # Only add assistant response if non-empty
                     if turn.agent_response and turn.agent_response.strip():
-                        messages.append(AgentMessage(content=turn.agent_response))
+                        messages.append(
+                            AgentMessage(
+                                agent_id=self.agent_id,
+                                session_id="",  # Historical messages don't have session_id
+                                content=turn.agent_response,
+                            )
+                        )
             except Exception as e:
                 logger.debug(f"Error getting recent conversation: {e}")
 
