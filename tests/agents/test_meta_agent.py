@@ -1,5 +1,6 @@
 """Test MetaAgent core functionality."""
 
+import logging
 from pathlib import Path
 from typing import Any, AsyncIterator
 from unittest.mock import AsyncMock
@@ -28,6 +29,8 @@ from common.messages import (
 )
 from tools.base import BaseCoreTool
 from tools.registry import get_tool_executor
+
+logger = logging.getLogger(__name__)
 
 
 @pytest.mark.unit
@@ -242,12 +245,14 @@ class TestMetaAgent:
             user_query="My favorite color is blue",
             agent_response="I'll remember that your favorite color is blue.",
             agent_id="test-meta-agent",
+            session_id="test-session",
         )
 
         await memory_manager.record_conversation_turn(
             user_query="What's the capital of France?",
             agent_response="The capital of France is Paris.",
             agent_id="test-meta-agent",
+            session_id="test-session",
         )
 
         # Build context for related query
@@ -272,12 +277,19 @@ class TestMetaAgent:
         # Mock LLM to raise an error
         mock_llm_client.generate_stream_with_tools.side_effect = Exception("API Error")
 
-        # Should raise the exception
-        with pytest.raises(Exception, match="API Error"):
-            async for chunk in meta_agent.stream_chat(
-                create_user_message("METAGEN", "test-session", "Test query")
-            ):
-                pass
+        # Should yield an ErrorMessage instead of raising
+        messages = []
+        async for chunk in meta_agent.stream_chat(
+            create_user_message("METAGEN", "test-session", "Test query")
+        ):
+            messages.append(chunk)
+
+        # Should have received an ErrorMessage
+        from common.messages import ErrorMessage
+
+        error_messages = [m for m in messages if isinstance(m, ErrorMessage)]
+        assert len(error_messages) >= 1
+        assert "API Error" in error_messages[0].error
 
         # Error should be recorded in conversation
         recent = await meta_agent.memory_manager.get_recent_conversations(limit=1)
@@ -340,7 +352,10 @@ class TestMetaAgent:
         # Add many conversations
         for i in range(20):
             await memory_manager.record_conversation_turn(
-                user_query=f"Question {i}", agent_response=f"Answer {i}", agent_id="test-meta-agent"
+                user_query=f"Question {i}",
+                agent_response=f"Answer {i}",
+                agent_id="test-meta-agent",
+                session_id="test-session",
             )
 
         # Build context - should limit history
@@ -471,17 +486,19 @@ class TestMetaAgentIntegration:
                 response1 = chunk.content
 
         assert len(response1) > 0
-        print(f"First response: {response1}")
+        logger.debug(f"First response: {response1}")
 
         # Check what's in memory
         recent = await meta_agent.memory_manager.get_recent_conversations(limit=10)
-        print(f"Conversations in memory: {len(recent)}")
+        logger.debug(f"Conversations in memory: {len(recent)}")
         for conv in recent:
-            print(f"  - Query: {conv.user_query[:50]}... Response: {conv.agent_response[:50]}...")
+            logger.debug(
+                f"  - Query: {conv.user_query[:50]}... Response: {conv.agent_response[:50]}..."
+            )
 
         # Check what context will be built for second message
         context_messages = await meta_agent.build_context("What's my name and favorite color?")
-        print(f"\nContext for second message ({len(context_messages)} messages):")
+        logger.debug(f"\nContext for second message ({len(context_messages)} messages):")
         for i, msg in enumerate(context_messages):
             msg_type = type(msg).__name__
             content_preview = (
@@ -489,7 +506,7 @@ class TestMetaAgentIntegration:
                 if hasattr(msg, "content") and len(msg.content) > 60
                 else getattr(msg, "content", "No content")
             )
-            print(f"  [{i}] {msg_type}: {content_preview}")
+            logger.debug(f"  [{i}] {msg_type}: {content_preview}")
 
         # Second message - should remember the name and color
         response2 = ""
@@ -499,7 +516,7 @@ class TestMetaAgentIntegration:
             if isinstance(chunk, AgentMessage):
                 response2 = chunk.content
 
-        print(f"\nSecond response: {response2}")
+        logger.debug(f"\nSecond response: {response2}")
 
         # Should remember both pieces of information
         assert "TestUser" in response2 or "test user" in response2.lower()
@@ -517,7 +534,7 @@ class TestMetaAgentIntegration:
 
         responses = []
         for i, turn in enumerate(turns):
-            print(f"\n=== Turn {i + 1}: {turn}")
+            logger.debug(f"\n=== Turn {i + 1}: {turn}")
             response = ""
             async for chunk in meta_agent.stream_chat(
                 create_user_message("METAGEN", "test-session", turn)
@@ -525,16 +542,16 @@ class TestMetaAgentIntegration:
                 if isinstance(chunk, AgentMessage):
                     response = chunk.content
             responses.append(response)
-            print(f"Response: {response}")
+            logger.debug(f"Response: {response}")
 
             # Check conversation history
             recent = await meta_agent.memory_manager.get_recent_conversations(limit=10)
-            print(f"Total conversations in memory: {len(recent)}")
+            logger.debug(f"Total conversations in memory: {len(recent)}")
 
         # All turns should have responses
         assert all(len(r) > 0 for r in responses)
         # Last response should reference "ocean"
-        print(f"\nLast response: {responses[-1]}")
+        logger.debug(f"\nLast response: {responses[-1]}")
         assert "ocean" in responses[-1].lower()
 
     async def test_error_recovery(self, meta_agent: MetaAgent) -> None:
@@ -893,16 +910,16 @@ class TestMetaAgentToolApproval:
             async for chunk in meta_agent_with_approval.stream_chat(user_message):
                 # Debug: log message types
                 if isinstance(chunk, AgentMessage):
-                    print(f"DEBUG: Got AgentMessage: {chunk.content[:50]}...")
+                    logger.debug(f"DEBUG: Got AgentMessage: {chunk.content[:50]}...")
                     response = chunk.content
                 elif isinstance(chunk, ToolStartedMessage):
-                    print(f"DEBUG: Got ToolStartedMessage for tool: {chunk.tool_name}")
+                    logger.debug(f"DEBUG: Got ToolStartedMessage for tool: {chunk.tool_name}")
                     tool_calls.append(chunk.tool_name)
                 elif isinstance(chunk, ApprovalRequestMessage):
-                    print(f"DEBUG: Got ApprovalRequestMessage for tool: {chunk.tool_name}")
+                    logger.debug(f"DEBUG: Got ApprovalRequestMessage for tool: {chunk.tool_name}")
                     approval_requests.append(chunk)
                 else:
-                    print(f"DEBUG: Got {type(chunk).__name__}")
+                    logger.debug(f"DEBUG: Got {type(chunk).__name__}")
 
             # Wait for approval task to complete
             await approval_task

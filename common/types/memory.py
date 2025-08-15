@@ -14,6 +14,7 @@ class TurnCreationRequest(BaseModel):
 
     user_query: str
     agent_id: str
+    session_id: str
     task_id: Optional[str] = None
     source_entity: str = "USER"
     target_entity: Optional[str] = None

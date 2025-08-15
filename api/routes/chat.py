@@ -118,6 +118,8 @@ async def chat_stream(request: Request, chat_request: ChatRequest) -> StreamingR
             yield f"data: {json.dumps(error_msg.to_dict())}\n\n"
         finally:
             logger.info(f"🏁 Stream completed for session: {chat_request.session_id}")
+            # Don't unregister session here - the agent might still be processing
+            # Session will be cleaned up when agent sends final message or after timeout
 
     return StreamingResponse(
         generate_stream(),

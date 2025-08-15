@@ -97,9 +97,8 @@ class AgentManager:
         self.meta_agent: Optional[MetaAgent] = None
         self.task_agent: Optional[TaskExecutionAgent] = None
 
-        # CLI communication queues
-        self.cli_input_queue: asyncio.Queue = asyncio.Queue()
-        self.cli_output_queue: asyncio.Queue = asyncio.Queue()
+        # Session-based routing infrastructure
+        self._session_queues: dict[str, asyncio.Queue[Message]] = {}
 
         # SINGLE shared output channel for all agents
         self.unified_agent_output: asyncio.Queue = asyncio.Queue()
@@ -119,7 +118,7 @@ class AgentManager:
 
         # FIFO coordination for task completion
         self.pending_task_completions: list[asyncio.Event] = []
-        self.pending_task_results: list[str] = []
+        self.pending_task_results: list[ToolCallResult] = []
 
         # Tool approval configuration
         self._require_tool_approval: bool = False
@@ -134,6 +133,39 @@ class AgentManager:
             return self.meta_agent
         else:
             return self.task_agent
+
+    def register_session(self, session_id: str) -> asyncio.Queue[Message]:
+        """Register a new session and return its output queue.
+
+        Args:
+            session_id: Unique identifier for the session
+
+        Returns:
+            Output queue for this session
+        """
+        if session_id not in self._session_queues:
+            self._session_queues[session_id] = asyncio.Queue()
+            logger.info(f"📝 Registered new session: {session_id}")
+        else:
+            logger.debug(f"♻️ Reusing existing session: {session_id}")
+        return self._session_queues[session_id]
+
+    def unregister_session(self, session_id: str) -> None:
+        """Clean up session resources.
+
+        Args:
+            session_id: Session to unregister
+        """
+        if session_id in self._session_queues:
+            # Clear any remaining messages in the queue
+            queue = self._session_queues[session_id]
+            while not queue.empty():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            del self._session_queues[session_id]
+            logger.info(f"🗑️ Unregistered session: {session_id}")
 
     def configure_tool_approval(
         self, require_approval: bool = False, auto_approve_tools: Optional[set[str]] = None
@@ -185,6 +217,9 @@ class AgentManager:
                 logger.info(
                     f"📥 MetaAgent received message from queue: "
                     f"{type(message).__name__} - {msg_preview}..."
+                )
+                logger.debug(
+                    f"Message session_id={message.session_id}, agent_id={message.agent_id}"
                 )
 
                 # Process message and stream output back to unified queue
@@ -305,7 +340,7 @@ class AgentManager:
                     await asyncio.sleep(wait_time)
 
     async def _route_agent_outputs(self) -> None:
-        """ONLY consumer of unified output queue with FIFO coordination."""
+        """Route messages from agents to appropriate session queues based on session_id."""
         logger.debug("🚀 Starting message router")
         error_count = 0
         max_consecutive_errors = 10  # Higher threshold for router
@@ -320,33 +355,114 @@ class AgentManager:
                 message_count += 1
                 self._log_message(msg, "📨")
 
-                # Forward message directly to CLI
-                logger.info(f"[Router] Putting {type(msg).__name__} into cli_output_queue")
-                await self.cli_output_queue.put(msg)
-                logger.info(f"[Router] Put {type(msg).__name__} into cli_output_queue")
+                # Route to session-specific queue based on session_id
+                # Check if session is still registered (client may have disconnected)
+                if msg.session_id not in self._session_queues:
+                    logger.warning(
+                        f"⚠️ Session {msg.session_id} not registered "
+                        f"(client may have disconnected). "
+                        f"Dropping {type(msg).__name__}. "
+                        f"Active sessions: {list(self._session_queues.keys())}"
+                    )
+                    # Continue processing next message
+                    continue
 
-                # Check for task completion via ToolResultMessage
+                # IMPORTANT: TaskAgent Message Filtering
+                # =========================================
+                # When TaskAgent completes a task, it sends a final AgentMessage with its result.
+                # We need to filter this message out and NOT route it to the session queue because:
+                #
+                # 1. The MetaAgent's execute_task tool flow already handles creating
+                #    the ToolResultMessage
+                #    - MetaAgent calls execute_task via the tool interceptor
+                #    - The interceptor waits for task completion via the completion_event
+                #    - When the task completes, the interceptor returns a ToolCallResult
+                #    - BaseAgent's _handle_tool_flow (with show_tool_results=True) converts this
+                #      ToolCallResult into a ToolResultMessage and yields it
+                #    - This ToolResultMessage flows through the normal agent output queue
+                #
+                # 2. If we don't filter the TaskAgent's final message here, the user would see:
+                #    - The task result as an AgentMessage from TaskAgent (confusing)
+                #    - The task result as a ToolResultMessage from MetaAgent (correct)
+                #
+                # 3. We still need to signal the completion event so the interceptor can return
+                #    the result to the MetaAgent's tool execution flow
+                #
+                # Flow summary:
+                # MetaAgent -> execute_task -> interceptor (waits) -> TaskAgent executes ->
+                # TaskAgent final message -> Router filters it out & signals completion ->
+                # interceptor returns ToolCallResult -> BaseAgent yields ToolResultMessage ->
+                # ToolResultMessage routed to session
+
                 if (
                     self.task_agent is not None
-                    and isinstance(msg, ToolResultMessage)
+                    and isinstance(msg, AgentMessage)
                     and msg.agent_id == self.task_agent.agent_id
-                    and msg.tool_name == "execute_task"
+                    and msg.final  # This is the final message from TaskAgent
                 ):
                     logger.debug(
-                        f"🎯 TaskExecutionAgent completed with ToolResultMessage - FIFO queue has "
+                        f"🎯 TaskExecutionAgent completed with final AgentMessage - FIFO queue has "
                         f"{len(self.pending_task_completions)} pending completions"
                     )
 
                     # Signal the next pending task completion (FIFO order)
                     if self.pending_task_completions:
-                        # Store the complete ToolCallResult, not just content string
-                        self.pending_task_results.append(msg.result)
+                        # Context MUST be present - if not, we have a bug
+                        assert self.task_agent.current_task_context is not None, (
+                            "TaskAgent completed but current_task_context is None - this is a bug!"
+                        )
+
+                        tool_call_id = self.task_agent.current_task_context.tool_call_id
+                        task_name = self.task_agent.current_task_context.task_name
+                        task_id = self.task_agent.current_task_context.task_id
+
+                        # Create a ToolCallResult for the interceptor to return to MetaAgent
+                        result = ToolCallResult(
+                            tool_name="execute_task",
+                            tool_call_id=tool_call_id,
+                            agent_id=msg.agent_id,
+                            session_id=msg.session_id,
+                            content=f"Task executed successfully. Result: {msg.content}",
+                            is_error=False,
+                            error=None,
+                            error_type=None,
+                            user_display=f"Task '{task_name}' completed successfully",
+                            metadata={
+                                "task_id": task_id,
+                                "agent_id": msg.agent_id,
+                                "result": msg.content,
+                            },
+                        )
+
+                        # Store the result for the interceptor to read
+                        self.pending_task_results.append(result)
+
+                        # DO NOT create a ToolResultMessage here - the MetaAgent's BaseAgent
+                        # flow will create it when the interceptor returns the ToolCallResult
+
+                        logger.info(
+                            f"[Router] Filtering out TaskAgent final message "
+                            f"for session {msg.session_id}"
+                        )
+                        logger.info(
+                            "[Router] ToolResultMessage will be created by MetaAgent's tool flow"
+                        )
+
+                        # Signal completion for interceptor to read the result
                         completion_event = self.pending_task_completions.pop(0)
                         completion_event.set()
                         logger.debug(
-                            f"✅ Signaled completion event with complete result, "
+                            f"✅ Signaled completion event with result, "
                             f"{len(self.pending_task_completions)} remaining"
                         )
+
+                        # Filter out the TaskAgent's final message - don't route it
+                        continue
+
+                # Normal routing for all other messages
+                logger.info(f"[Router] Routing {type(msg).__name__} to session {msg.session_id}")
+                await self._session_queues[msg.session_id].put(msg)
+                logger.info(f"[Router] Routed {type(msg).__name__} to session {msg.session_id}")
 
                 # Reset error count on successful routing
                 error_count = 0
@@ -361,7 +477,7 @@ class AgentManager:
                     exc_info=True,
                 )
 
-                # Try to send error to output queue
+                # Try to send error to session queue
                 try:
                     error_message = ErrorMessage(
                         agent_id=msg.agent_id,  # Use agent_id from the message being routed
@@ -369,9 +485,12 @@ class AgentManager:
                         error=f"Router error: {str(e)}",
                         details={"error": str(e), "error_count": error_count},
                     )
-                    await self.cli_output_queue.put(error_message)
+                    if msg.session_id in self._session_queues:
+                        await self._session_queues[msg.session_id].put(error_message)
+                    else:
+                        logger.error(f"Cannot send error - session {msg.session_id} not found")
                 except Exception as inner_e:
-                    logger.error(f"Failed to send router error to output: {inner_e}")
+                    logger.error(f"Failed to send router error to session: {inner_e}")
 
                 # If too many errors, wait before continuing
                 if error_count >= max_consecutive_errors:
@@ -512,64 +631,80 @@ class AgentManager:
 
     async def chat_stream(self, message: Message) -> AsyncIterator[Message]:
         """
-        Simple bidirectional stream using persistent agents and unified output queue.
+        Stream messages for a specific session.
 
-        Sends user message to MetaAgent and streams all agent outputs back to CLI.
+        Sends user message to appropriate agent and streams responses back to the session.
         """
         # Get message content for logging
         msg_preview = (
             message.content[:50] if isinstance(message, ChatMessage) else str(message)[:50]
         )
-        logger.debug(f"🚀 Chat stream started with message: {msg_preview}...")
+        logger.debug(f"🚀 Chat stream started for session {message.session_id}: {msg_preview}...")
 
         if not self._initialized:
             logger.debug("❌ Agent not initialized")
             yield ErrorMessage(
-                agent_id=message.agent_id,  # Use agent_id from the incoming message
-                session_id=message.session_id,  # Use session_id from the incoming message
+                agent_id=message.agent_id,
+                session_id=message.session_id,
                 error="Agent not initialized. Call initialize() first.",
             )
             return
 
-        try:
-            # Send message to MetaAgent input queue
-            logger.info(f"📤 Sending {type(message).__name__} to MetaAgent input queue")
-            logger.debug(f"📤 Full message: {message}")
-            await self.meta_agent_input.put(message)
-            logger.info(f"✅ {type(message).__name__} sent to MetaAgent input queue")
+        # Register session if not already registered
+        session_queue = self.register_session(message.session_id)
 
-            # Stream outputs from CLI output queue
-            # Router task is already forwarding all agent outputs here
-            logger.info("[chat_stream] Starting to read from cli_output_queue")
+        try:
+            # Route message to appropriate agent based on agent_id
+            if message.agent_id == "METAGEN" or not message.agent_id:
+                logger.info(f"📤 Sending {type(message).__name__} to MetaAgent")
+                await self.meta_agent_input.put(message)
+            elif self.task_agent and message.agent_id == self.task_agent.agent_id:
+                logger.info(f"📤 Sending {type(message).__name__} to TaskExecutionAgent")
+                await self.task_agent_input.put(message)
+            else:
+                logger.error(f"Unknown agent_id: {message.agent_id}")
+                yield ErrorMessage(
+                    agent_id=message.agent_id,  # Keep the unknown agent_id for debugging
+                    session_id=message.session_id,
+                    error=f"Unknown agent: {message.agent_id}",
+                )
+                return
+
+            # Stream outputs from session-specific queue
+            logger.info(f"[chat_stream] Reading from session queue for {message.session_id}")
             while True:
                 try:
                     # Get next message with timeout
-                    # Wait for message from cli_output_queue
-                    msg = await asyncio.wait_for(self.cli_output_queue.get(), timeout=0.1)
-                    logger.info(f"[chat_stream] Got {type(msg).__name__} from cli_output_queue")
+                    msg = await asyncio.wait_for(session_queue.get(), timeout=0.1)
+                    logger.info(
+                        f"[chat_stream] Got {type(msg).__name__} for session {message.session_id}"
+                    )
                     self._log_message(msg, "📥")
-                    logger.info(f"[chat_stream] Yielding {type(msg).__name__}")
                     yield msg
-                    logger.info(f"[chat_stream] Yielded {type(msg).__name__}")
 
-                    # Check if this is a final response from MetaAgent
-                    if isinstance(msg, AgentMessage) and msg.agent_id == "METAGEN" and msg.final:
-                        # MetaAgent completed its response
-                        logger.debug("🏁 Got final response from MetaAgent, breaking loop")
+                    # Check if this is a final response for this turn
+                    if isinstance(msg, AgentMessage) and msg.final:
+                        logger.debug(
+                            f"🏁 Got final response for turn in session {message.session_id}"
+                        )
+                        # Session continues - client may send more messages
                         break
                     elif isinstance(msg, ErrorMessage):
-                        logger.debug("❌ Got error response, breaking loop")
+                        logger.debug(
+                            f"❌ Got error response for turn in session {message.session_id}"
+                        )
+                        # Session continues despite error in this turn
                         break
 
                 except asyncio.TimeoutError:
-                    # Normal behavior - just continue waiting
+                    # Normal behavior - continue waiting
                     continue
 
         except Exception as e:
             logger.error(f"Error in chat_stream: {e}", exc_info=True)
             yield ErrorMessage(
-                agent_id=message.agent_id,  # Use agent_id from the incoming message
-                session_id=message.session_id,  # Use session_id from the incoming message
+                agent_id=message.agent_id,  # Preserve original agent_id
+                session_id=message.session_id,
                 error=f"Error: {str(e)}",
             )
 
@@ -685,6 +820,31 @@ class AgentManager:
                 if param:
                     typed_values[key] = ParameterValue(value=value, parameter_type=param.type)
 
+            # Check for missing required parameters
+            missing_params = []
+            for param in task.definition.input_schema:
+                if param.required and param.name not in typed_values:
+                    missing_params.append(param.name)
+                    logger.warning(f"Missing required parameter: {param.name}")
+
+            if missing_params:
+                logger.error(f"Task {task_id} missing required parameters: {missing_params}")
+                return ToolCallResult(
+                    tool_name=tool_name,
+                    tool_call_id=tool_call_id,
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    content=f"Missing required parameters: {', '.join(missing_params)}",
+                    is_error=True,
+                    error=f"Missing required parameters: {', '.join(missing_params)}",
+                    error_type=ToolErrorType.INVALID_ARGS,
+                    user_display=(
+                        f"Task cannot be executed. Missing required parameters: "
+                        f"{', '.join(missing_params)}"
+                    ),
+                    metadata={"missing_params": missing_params, "task_id": task_id},
+                )
+
             # Create execution context with tool_call_id
             context = TaskExecutionContext(
                 task_id=task_id,
@@ -712,7 +872,15 @@ class AgentManager:
                     metadata={},
                 )
 
+            logger.info(
+                f"[Interceptor] Setting current task on TaskAgent: {self.task_agent.agent_id}, "
+                f"context.tool_call_id={context.tool_call_id}"
+            )
             self.task_agent.set_current_task(context)
+            logger.info(
+                f"[Interceptor] Current task set, current_task_context is now: "
+                f"{self.task_agent.current_task_context}"
+            )
 
             # Build task prompt and send to TaskExecutionAgent as UserMessage
             task_prompt = self.task_agent.build_task_prompt(context)

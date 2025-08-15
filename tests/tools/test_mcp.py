@@ -46,6 +46,7 @@ class TestMCPInfrastructure:
                 "That's great! TensorFlow is excellent for ML. What kind of model are you building?"
             ),
             agent_id="test-agent",
+            session_id="test-session",
         )
         await manager.record_conversation_turn(
             user_query="I'm building a recommendation system for an e-commerce platform",
@@ -53,6 +54,7 @@ class TestMCPInfrastructure:
                 "Recommendation systems are very useful! "
                 "Are you using collaborative filtering or content-based filtering?"
             ),
+            session_id="test-session",
             agent_id="test-agent",
         )
 

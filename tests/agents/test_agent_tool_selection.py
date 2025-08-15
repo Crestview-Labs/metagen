@@ -199,11 +199,6 @@ class TestAgentToolSelection:
         # Should use calculator tool
         assert "calculator" in tools_used
         # Debug: print what we actually got
-        # print(f"Response: {response}")
-        # print(f"Tools used: {tools_used}")
-        # print(f"Tool results: {tool_results}")
-        # print(f"Total chunks: {len(all_chunks)}")
-        # print(f"All stages: {[c.get('stage') for c in all_chunks]}")
         # Check in tool results or response
         assert "100" in response or any("100" in str(r) for r in tool_results)
 

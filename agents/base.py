@@ -162,21 +162,32 @@ class BaseAgent(ABC):
         """
         # Extract session_id from the incoming message
         session_id = message.session_id
+        logger.debug(
+            f"[{self.agent_id}] stream_chat: Received {type(message).__name__} "
+            f"for session {session_id}"
+        )
 
         if isinstance(message, UserMessage):
-            logger.info("[stream_chat] Processing UserMessage")
+            logger.debug(f"[{self.agent_id}] [stream_chat] Processing UserMessage")
             # Build context including conversation history
             context_messages = await self.build_context(message.content)
+            logger.debug(
+                f"[{self.agent_id}] stream_chat: Built context with "
+                f"{len(context_messages)} messages"
+            )
 
             # Add the current user message to the context
             messages = context_messages + [message]
 
             # Stream the response with session_id
-            logger.info("[stream_chat] Starting generate_stream_with_tools")
+            logger.debug(
+                f"[{self.agent_id}] [stream_chat] Starting generate_stream_with_tools "
+                f"for session {session_id}"
+            )
             async for response in self.generate_stream_with_tools(messages, session_id=session_id):
-                logger.info(f"[stream_chat] Yielding {type(response).__name__}")
+                logger.debug(f"[{self.agent_id}] [stream_chat] Yielding {type(response).__name__}")
                 yield response
-                logger.info(f"[stream_chat] Yielded {type(response).__name__}")
+                logger.debug(f"[{self.agent_id}] [stream_chat] Yielded {type(response).__name__}")
 
         elif isinstance(message, ApprovalResponseMessage):
             logger.info(
@@ -205,25 +216,37 @@ class BaseAgent(ABC):
         3. Recursive tool calls
         4. Message yielding
         """
-        logger.info("[generate_stream_with_tools] Starting")
+        logger.debug(f"[{self.agent_id}] [generate_stream_with_tools] Starting")
         # Initialize
         turn_id = await self._create_turn(messages)
 
         # Yield initial thinking
-        logger.info("[generate_stream_with_tools] Yielding ThinkingMessage")
+        logger.debug(f"[{self.agent_id}] [generate_stream_with_tools] Yielding ThinkingMessage")
         yield ThinkingMessage(
             agent_id=self.agent_id, session_id=session_id, content="Processing your request..."
         )
 
         try:
             # Run the main conversation loop
-            logger.info("[generate_stream_with_tools] Starting _run_conversation_loop")
+            logger.debug(
+                f"[{self.agent_id}] generate_stream_with_tools: Starting loop "
+                f"for turn {turn_id}, session {session_id}"
+            )
+            logger.debug(
+                f"[{self.agent_id}] [generate_stream_with_tools] Starting _run_conversation_loop"
+            )
             async for message in self._run_conversation_loop(
                 turn_id, messages, session_id, **kwargs
             ):
-                logger.info(f"[generate_stream_with_tools] Got {type(message).__name__} from loop")
+                logger.debug(
+                    f"[{self.agent_id}] [generate_stream_with_tools] "
+                    f"Got {type(message).__name__} from loop"
+                )
                 yield message
-                logger.info(f"[generate_stream_with_tools] Yielded {type(message).__name__}")
+                logger.debug(
+                    f"[{self.agent_id}] [generate_stream_with_tools] "
+                    f"Yielded {type(message).__name__}"
+                )
         except Exception as e:
             # Handle any errors that occur during processing
             logger.error(f"Error in conversation loop: {e}", exc_info=True)
@@ -233,7 +256,7 @@ class BaseAgent(ABC):
 
             # Complete the turn with error status
             await self._complete_turn_with_error(turn_id, str(e))
-            raise
+            # Don't re-raise - we've already yielded the error message
 
     async def _run_conversation_loop(
         self, turn_id: str, messages: list[Message], session_id: str, **kwargs: Any
@@ -241,6 +264,10 @@ class BaseAgent(ABC):
         """Run the main conversation loop with tool support."""
         current_messages = messages.copy()
         iteration = 0
+        logger.debug(
+            f"[{self.agent_id}] [_run_conversation_loop] Starting "
+            f"for session {session_id}, turn {turn_id}"
+        )
 
         # Track all content and tool usage for final turn update
         all_response_content = []
@@ -257,12 +284,16 @@ class BaseAgent(ABC):
         # Main conversation loop
         while iteration < self._max_iterations:
             iteration += 1
-            logger.debug(f"🔄 Agentic loop iteration {iteration}")
+            logger.debug(f"[{self.agent_id}] 🔄 Agentic loop iteration {iteration}")
 
             # Get LLM stream (previous_tool_calls/results are None on first iteration)
             if not self.llm_client:
                 raise RuntimeError("LLM client not initialized")
 
+            logger.debug(
+                f"[{self.agent_id}] About to call LLM for iteration {iteration}, "
+                f"session {session_id}"
+            )
             llm_stream = self.llm_client.generate_stream_with_tools(
                 current_messages,
                 self.tools,
@@ -309,6 +340,10 @@ class BaseAgent(ABC):
             # Check if tools were requested
             if not tool_requests and content_buffer:
                 # Got content but no tools, conversation complete
+                logger.debug(
+                    f"[{self.agent_id}] [_run_conversation_loop] No tools requested, "
+                    f"ending conversation. Iteration={iteration}, session={session_id}"
+                )
                 # Mark the last agent message as final before yielding
                 if last_agent_message:
                     last_agent_message.final = True
@@ -331,32 +366,46 @@ class BaseAgent(ABC):
             tool_executions = []
             assert tool_requests is not None  # We checked above that we have tool requests
             logger.info(
-                f"[_run_conversation_loop] Starting _handle_tool_flow "
+                f"[{self.agent_id}] [_run_conversation_loop] Starting _handle_tool_flow "
                 f"with {len(tool_requests)} tools"
             )
             async for item in self._handle_tool_flow(
                 tool_requests, turn_id, tool_call_history, session_id
             ):
                 logger.info(
-                    f"[_run_conversation_loop] Got {type(item).__name__} from _handle_tool_flow"
+                    f"[{self.agent_id}] [_run_conversation_loop] "
+                    f"Got {type(item).__name__} from _handle_tool_flow"
                 )
                 if isinstance(item, Message):
                     # Yield messages as they come
-                    logger.info(f"[_run_conversation_loop] Yielding {type(item).__name__}")
+                    logger.debug(
+                        f"[{self.agent_id}] [_run_conversation_loop] Yielding {type(item).__name__}"
+                    )
                     yield item
-                    logger.info(f"[_run_conversation_loop] Yielded {type(item).__name__}")
+                    logger.debug(
+                        f"[{self.agent_id}] [_run_conversation_loop] Yielded {type(item).__name__}"
+                    )
                 elif isinstance(item, list):
                     # Final result - list of executions
                     logger.info(
-                        f"[_run_conversation_loop] Got execution list with {len(item)} items"
+                        f"[{self.agent_id}] [_run_conversation_loop] "
+                        f"Got execution list with {len(item)} items"
                     )
                     tool_executions = item
                     break
 
             if not tool_executions:
                 # No tools executed (timeout/error)
+                logger.error(
+                    f"[{self.agent_id}] [_run_conversation_loop] "
+                    f"No tool executions returned from _handle_tool_flow"
+                )
                 break
 
+            logger.debug(
+                f"[{self.agent_id}] [_run_conversation_loop] "
+                f"Got {len(tool_executions)} tool executions"
+            )
             # Track executions for final turn update
             for execution in tool_executions:
                 all_tool_calls.append(execution.tool_call)
@@ -367,12 +416,17 @@ class BaseAgent(ABC):
             previous_tool_results = [ex.result for ex in tool_executions]
 
             logger.info(
-                f"🎯 Iteration {iteration} complete, tool results: "
+                f"[{self.agent_id}] 🎯 Iteration {iteration} complete, tool results: "
                 f"{[r.content[:50] for r in previous_tool_results]}"
             )
 
             # Clear for next iteration
             tool_requests = None
+
+            logger.debug(
+                f"[{self.agent_id}] [_run_conversation_loop] "
+                f"End of iteration {iteration}, continuing loop for session {session_id}"
+            )
 
             # Loop continues...
 
@@ -486,12 +540,14 @@ class BaseAgent(ABC):
         )
 
         if pending_tools:
-            logger.info(f"[_handle_tool_flow] Have {len(pending_tools)} pending tools")
+            logger.debug(
+                f"[{self.agent_id}] [_handle_tool_flow] Have {len(pending_tools)} pending tools"
+            )
             # Emit approval requests
             for tool in pending_tools:  # type: ignore[assignment]
                 assert isinstance(tool, TrackedTool)  # Help mypy understand
                 logger.info(
-                    f"[_handle_tool_flow] 🚨 YIELDING ApprovalRequestMessage "
+                    f"[{self.agent_id}] [_handle_tool_flow] 🚨 YIELDING ApprovalRequestMessage "
                     f"for tool {tool.tool_name} (id={tool.tool_id})"
                 )
                 yield ApprovalRequestMessage(
@@ -502,7 +558,7 @@ class BaseAgent(ABC):
                     tool_args=tool.tool_args,
                 )
                 logger.info(
-                    f"[_handle_tool_flow] ✅ YIELDED ApprovalRequestMessage "
+                    f"[{self.agent_id}] [_handle_tool_flow] ✅ YIELDED ApprovalRequestMessage "
                     f"for tool {tool.tool_name}"
                 )
 
@@ -572,6 +628,7 @@ class BaseAgent(ABC):
             # Yield result message
             assert result.tool_call_id is not None  # We always set tool_call_id
             if result.is_error:
+                logger.info(f"Tool {result.tool_name} returned error: {result.error}")
                 yield ToolErrorMessage(
                     agent_id=self.agent_id,
                     session_id=session_id,
@@ -594,8 +651,11 @@ class BaseAgent(ABC):
         self._tool_tracker = None
 
         # Return executions as final yield
-        logger.info(f"🎯 _handle_tool_flow returning {len(executions)} executions")
+        logger.debug(
+            f"[{self.agent_id}] _handle_tool_flow about to yield {len(executions)} executions"
+        )
         yield executions
+        logger.debug(f"[{self.agent_id}] _handle_tool_flow completed after yielding executions")
 
     async def _process_approval_response(self, approval: ApprovalResponseMessage) -> None:
         """Process tool approval response.
@@ -603,7 +663,7 @@ class BaseAgent(ABC):
         Updates ToolTracker with the decision.
         ToolTracker will automatically signal when all approvals are complete.
         """
-        logger.info(f"🎯 BaseAgent._process_approval_response called for tool: {approval.tool_id}")
+        logger.debug(f"BaseAgent._process_approval_response called for tool: {approval.tool_id}")
 
         if not self._tool_tracker:
             logger.error(f"No active ToolTracker for approval: {approval.tool_id}")
@@ -737,6 +797,9 @@ class BaseAgent(ABC):
 
             # Execute the tool
             try:
+                logger.info(
+                    f"[{self.agent_id}] Executing tool {tool.tool_name} with args: {tool.tool_args}"
+                )
                 executor = get_tool_executor()
                 # Create ToolCall object with session context
                 tool_call = ToolCall(
@@ -747,6 +810,10 @@ class BaseAgent(ABC):
                     session_id=session_id,
                 )
                 result = await executor.execute(tool_call)
+                logger.info(
+                    f"[{self.agent_id}] Tool {tool.tool_name} result: "
+                    f"is_error={result.is_error}, error={result.error}"
+                )
 
                 # Update tracker with result
                 await self._tool_tracker.update_stage(
@@ -797,15 +864,16 @@ class BaseAgent(ABC):
 
     async def _create_turn(self, messages: list[Message]) -> str:
         """Create a new conversation turn."""
-        # Extract user message
-        user_message = next(
-            (msg.content for msg in reversed(messages) if isinstance(msg, UserMessage)), ""
-        )
+        # Extract user message and session_id
+        user_msg = next((msg for msg in reversed(messages) if isinstance(msg, UserMessage)), None)
+        user_message = user_msg.content if user_msg else ""
+        session_id = user_msg.session_id if user_msg else ""
 
         # Create turn request
         request = TurnCreationRequest(
             user_query=user_message,
             agent_id=self.agent_id,
+            session_id=session_id,
             task_id=self.get_current_task_id(),
             user_metadata={"timestamp": datetime.now().isoformat()},
         )

@@ -5,6 +5,7 @@ These tests mock only the LLM responses, allowing the rest of the system
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, AsyncGenerator
 from unittest.mock import patch
@@ -17,6 +18,7 @@ from common.messages import (
     AgentMessage,
     ErrorMessage,
     Message,
+    ThinkingMessage,
     ToolCallMessage,
     ToolCallRequest,
     ToolErrorMessage,
@@ -26,6 +28,8 @@ from common.messages import (
 from common.models import Parameter, TaskDefinition
 from common.models.enums import ParameterType
 from db.engine import DatabaseEngine
+
+logger = logging.getLogger(__name__)
 
 
 @pytest.fixture
@@ -77,11 +81,14 @@ class TestTaskSubsystemE2E:
             nonlocal call_count
             call_count += 1
 
+            # Extract session_id from kwargs
+            session_id = kwargs.get("session_id", "test-session")
+
             if call_count == 1:
                 # First call: agent responds with text and tool call
                 yield AgentMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     content="I'll create a reusable task for analyzing CSV files and summaries.",
                     final=False,  # Not final yet, tool call coming
                 )
@@ -89,7 +96,7 @@ class TestTaskSubsystemE2E:
                 # Then it decides to call create_task tool
                 yield ToolCallMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     tool_calls=[
                         ToolCallRequest(
                             tool_id="call_001",
@@ -135,7 +142,7 @@ class TestTaskSubsystemE2E:
                 # Second call: after tool execution, agent responds with confirmation
                 yield AgentMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     content=(
                         "I've successfully created the CSV Analyzer task. This reusable task can "
                         "analyze CSV files and generate summaries with a configurable word limit."
@@ -160,17 +167,17 @@ class TestTaskSubsystemE2E:
             async for msg in agent_manager.chat_stream(user_msg):
                 responses.append(msg)
                 if isinstance(msg, ToolErrorMessage):
-                    print(f"Tool Error: {msg.error}")
+                    logger.debug(f"Tool Error: {msg.error}")
                 elif isinstance(msg, ToolResultMessage):
-                    print(f"Tool Result: {msg.result}")
+                    logger.debug(f"Tool Result: {msg.result}")
                 else:
                     msg_type = type(msg).__name__
                     msg_content = getattr(msg, "content", "no content")[:100]
-                    print(f"Response: {msg_type} - {msg_content}")
+                    logger.debug(f"Response: {msg_type} - {msg_content}")
 
         # Verify we got the expected message types
         message_types = [type(msg).__name__ for msg in responses]
-        print(f"\nMessage types received: {message_types}")
+        logger.debug(f"\nMessage types received: {message_types}")
         assert "AgentMessage" in message_types
         assert "ToolCallMessage" in message_types
         assert "ToolResultMessage" in message_types or "ToolErrorMessage" in message_types
@@ -259,17 +266,20 @@ class TestTaskSubsystemE2E:
             nonlocal meta_call_count
             meta_call_count += 1
 
+            # Extract session_id from kwargs
+            session_id = kwargs.get("session_id", "test-session")
+
             if meta_call_count == 1:
                 yield AgentMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     content="I'll execute the Test Executor task with your message.",
                     final=False,
                 )
 
                 yield ToolCallMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     tool_calls=[
                         ToolCallRequest(
                             tool_id="call_exec_001",
@@ -286,7 +296,7 @@ class TestTaskSubsystemE2E:
                 # The MetaAgent needs to respond after receiving the execute_task result
                 yield AgentMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     content=(
                         "The Test Executor task has been executed successfully. "
                         "The task echoed your message: 'Hello from test!' as requested."
@@ -341,32 +351,32 @@ class TestTaskSubsystemE2E:
             async for msg in agent_manager.chat_stream(user_msg):
                 responses.append(msg)
                 if isinstance(msg, ErrorMessage):
-                    print(f"Error: {msg.error}")
+                    logger.debug(f"Error: {msg.error}")
                 elif isinstance(msg, ToolErrorMessage):
-                    print(f"Tool Error: {msg.error}")
+                    logger.debug(f"Tool Error: {msg.error}")
                 elif isinstance(msg, ToolResultMessage):
-                    print(f"Tool Result: {msg.result}")
+                    logger.debug(f"Tool Result: {msg.result}")
                 else:
                     msg_type = type(msg).__name__
                     msg_content = getattr(msg, "content", "no content")[:100]
-                    print(f"Response: {msg_type} - {msg_content}")
+                    logger.debug(f"Response: {msg_type} - {msg_content}")
 
         # Debug: print all messages
-        print("\nAll messages:")
+        logger.debug("\nAll messages:")
         for msg in responses:
             msg_type = type(msg).__name__
             agent_id = getattr(msg, "agent_id", "N/A")
             content = getattr(msg, "content", getattr(msg, "error", "no content"))[:100]
-            print(f"  {msg_type}: {agent_id} - {content}")
+            logger.debug(f"  {msg_type}: {agent_id} - {content}")
 
         # Verify both agents participated
         agent_ids = set()
         for msg in responses:
-            if isinstance(msg, AgentMessage):
+            if isinstance(msg, (AgentMessage, ThinkingMessage)):
                 agent_ids.add(msg.agent_id)
 
         assert "METAGEN" in agent_ids
-        # Note: In the current design, TaskExecutionAgent messages stream through the router
+        # TaskAgent's ThinkingMessage should be present (final AgentMessage is filtered by router)
         assert any(aid.startswith("TASK_AGENT") for aid in agent_ids)
 
         # Verify task execution happened
@@ -393,17 +403,20 @@ class TestTaskSubsystemE2E:
             nonlocal create_call_count
             create_call_count += 1
 
+            # Extract session_id from kwargs
+            session_id = kwargs.get("session_id", "test-session")
+
             if create_call_count == 1:
                 yield AgentMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     content="I'll create a data processing task for you.",
                     final=False,
                 )
 
                 yield ToolCallMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     tool_calls=[
                         ToolCallRequest(
                             tool_id="call_create",
@@ -448,7 +461,7 @@ class TestTaskSubsystemE2E:
                 # After tool execution
                 yield AgentMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     content="I've successfully created the Data Processor task for you.",
                     final=True,
                 )
@@ -467,13 +480,13 @@ class TestTaskSubsystemE2E:
             ):
                 responses.append(msg)
                 if isinstance(msg, ToolErrorMessage):
-                    print(f"Tool Error: {msg.tool_name} - {msg.error}")
+                    logger.debug(f"Tool Error: {msg.tool_name} - {msg.error}")
                 else:
                     msg_type = type(msg).__name__
                     msg_content = getattr(msg, "content", getattr(msg, "tool_name", "no content"))[
                         :100
                     ]
-                    print(f"Create Response: {msg_type} - {msg_content}")
+                    logger.debug(f"Create Response: {msg_type} - {msg_content}")
 
         # Verify task was created
         task_created = False
@@ -495,17 +508,20 @@ class TestTaskSubsystemE2E:
             nonlocal list_call_count
             list_call_count += 1
 
+            # Extract session_id from kwargs
+            session_id = kwargs.get("session_id", "test-session")
+
             if list_call_count == 1:
                 yield AgentMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     content="Let me list all available tasks for you.",
                     final=False,
                 )
 
                 yield ToolCallMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     tool_calls=[
                         ToolCallRequest(
                             tool_id="call_list", tool_name="list_tasks", tool_args={"limit": 50}
@@ -516,7 +532,7 @@ class TestTaskSubsystemE2E:
                 # After tool execution
                 yield AgentMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     content=(
                         "Here are the available tasks. I found the Data Processor task "
                         "that was just created."
@@ -537,7 +553,7 @@ class TestTaskSubsystemE2E:
                 list_responses.append(msg)
                 msg_type = type(msg).__name__
                 msg_content = getattr(msg, "content", getattr(msg, "tool_name", "no content"))[:100]
-                print(f"List Response: {msg_type} - {msg_content}")
+                logger.debug(f"List Response: {msg_type} - {msg_content}")
 
         # Verify list_tasks was called and returned results
         list_result = None
@@ -613,17 +629,20 @@ class TestTaskSubsystemE2E:
             nonlocal invalid_call_count
             invalid_call_count += 1
 
+            # Get session_id from kwargs if available
+            session_id = kwargs.get("session_id", "test-session")
+
             if invalid_call_count == 1:
                 yield AgentMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     content="I'll execute the Strict Task.",
                     final=False,
                 )
 
                 yield ToolCallMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     tool_calls=[
                         ToolCallRequest(
                             tool_id="call_invalid",
@@ -635,11 +654,11 @@ class TestTaskSubsystemE2E:
                         )
                     ],
                 )
-            elif invalid_call_count == 2:
-                # After getting error about missing params
+            else:
+                # After getting error about missing params - always provide final message
                 yield AgentMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     content=(
                         "I see that the Strict Task requires a 'required_param' parameter "
                         "that wasn't "
@@ -660,17 +679,25 @@ class TestTaskSubsystemE2E:
                 responses.append(msg)
 
         # Verify we got an error about missing parameters
-        for msg in responses:
-            if isinstance(msg, ToolResultMessage) and msg.tool_name == "execute_task":
-                # The execute_task tool should have validated and returned an error
-                # We found the error message, which is what we're verifying
-                break
-
-        # Since execute_task validates parameters, it should have caught the error
-        assert any(
-            isinstance(msg, ToolResultMessage) and msg.tool_name == "execute_task"
+        # Check for either ToolResultMessage or ToolErrorMessage for execute_task
+        tool_error_messages = [
+            msg
             for msg in responses
+            if isinstance(msg, (ToolResultMessage, ToolErrorMessage))
+            and getattr(msg, "tool_name", None) == "execute_task"
+        ]
+
+        assert len(tool_error_messages) > 0, (
+            f"Expected ToolResultMessage or ToolErrorMessage for execute_task, got: "
+            f"{[type(m).__name__ for m in responses]}"
         )
+
+        # Verify the error mentions the missing parameter
+        error_msg = tool_error_messages[0]
+        if isinstance(error_msg, ToolErrorMessage):
+            assert "required_param" in error_msg.error or "required" in error_msg.error.lower(), (
+                f"Expected error to mention missing required parameter, got: {error_msg.error}"
+            )
 
     @pytest.mark.asyncio
     async def test_concurrent_task_execution(self, agent_manager: AgentManager) -> None:
@@ -731,18 +758,33 @@ class TestTaskSubsystemE2E:
             nonlocal meta_multi_call_count
             meta_multi_call_count += 1
 
+            # Get session_id from kwargs if available
+            session_id = kwargs.get("session_id", "test-session")
+
+            logger.debug(f"DEBUG: meta_multi_call_count={meta_multi_call_count}")
+
+            # Log what messages the LLM received
+            messages = args[0] if args else kwargs.get("messages", [])
+            logger.debug(f"DEBUG: MetaAgent LLM received {len(messages)} messages")
+            for i, msg in enumerate(messages[-3:]):  # Show last 3 messages
+                if hasattr(msg, "type"):
+                    logger.debug(
+                        f"  Message[{i}]: type={msg.type}, "
+                        f"content={getattr(msg, 'content', 'N/A')[:50]}"
+                    )
+
             if meta_multi_call_count == 1:
                 # First call: execute first task
                 yield AgentMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     content="I'll execute all three tasks for you in order.",
                     final=False,
                 )
 
                 yield ToolCallMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     tool_calls=[
                         ToolCallRequest(
                             tool_id="call_task_0",
@@ -755,14 +797,14 @@ class TestTaskSubsystemE2E:
                 # After first task result, execute second task
                 yield AgentMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     content="Task 1 completed. Now executing Task 2.",
                     final=False,
                 )
 
                 yield ToolCallMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     tool_calls=[
                         ToolCallRequest(
                             tool_id="call_task_1",
@@ -775,14 +817,14 @@ class TestTaskSubsystemE2E:
                 # After second task result, execute third task
                 yield AgentMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     content="Task 2 completed. Now executing Task 3.",
                     final=False,
                 )
 
                 yield ToolCallMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     tool_calls=[
                         ToolCallRequest(
                             tool_id="call_task_2",
@@ -791,16 +833,14 @@ class TestTaskSubsystemE2E:
                         )
                     ],
                 )
-            elif meta_multi_call_count == 4:
-                # After all tasks complete, send final summary
+            else:
+                # After all tasks complete or any other call, send final summary
                 yield AgentMessage(
                     agent_id="METAGEN",
-                    session_id="test-session",
+                    session_id=session_id,
                     content=(
-                        "All three tasks have been executed successfully in order:\n"
-                        "- Task 1: Processed Item 1\n"
-                        "- Task 2: Processed Item 2\n"
-                        "- Task 3: Processed Item 3"
+                        f"Completed {meta_multi_call_count - 1} task(s). "
+                        "All requested tasks have been processed."
                     ),
                     final=True,
                 )
@@ -815,23 +855,28 @@ class TestTaskSubsystemE2E:
             task_execution_count += 1
             current_task = task_execution_count
 
+            # Get session_id from kwargs if available
+            session_id = kwargs.get("session_id", "test-session")
+
+            logger.debug(f"DEBUG: task_execution_count={task_execution_count}")
+
             yield AgentMessage(
                 agent_id="TASK_EXECUTOR",
-                session_id="test-session",
+                session_id=session_id,
                 content=f"Executing Task {current_task}...",
                 final=False,
             )
 
             yield AgentMessage(
                 agent_id="TASK_EXECUTOR",
-                session_id="test-session",
+                session_id=session_id,
                 content=f"Processing Item {current_task} for Task {current_task}",
                 final=False,
             )
 
             yield AgentMessage(
                 agent_id="TASK_EXECUTOR",
-                session_id="test-session",
+                session_id=session_id,
                 content=(
                     f"Task {current_task} completed successfully! "
                     f"Result: Processed Item {current_task}"
@@ -856,23 +901,47 @@ class TestTaskSubsystemE2E:
                 UserMessage(session_id="test-session", content="Execute all three tasks")
             ):
                 responses.append(msg)
+                msg_type = type(msg).__name__
+                agent_id = getattr(msg, "agent_id", "N/A")
+                is_final = getattr(msg, "final", "N/A")
+                tool_name = getattr(msg, "tool_name", "N/A")
+
+                if msg_type in ["ToolResultMessage", "ToolErrorMessage", "ToolStartedMessage"]:
+                    logger.debug(f"DEBUG: {msg_type}, agent_id={agent_id}, tool={tool_name}")
+                elif msg_type == "AgentMessage" and is_final:
+                    logger.debug(f"DEBUG: FINAL {msg_type}, agent_id={agent_id}")
+                elif msg_type == "ToolCallMessage":
+                    tool_calls = getattr(msg, "tool_calls", [])
+                    logger.debug(
+                        f"DEBUG: {msg_type}, agent_id={agent_id}, num_tools={len(tool_calls)}"
+                    )
 
         # Verify all tasks were executed
         assert task_execution_count == 3
 
-        # Verify we got responses from task execution
-        task_agent_messages = [
+        # Verify we got responses from task execution (now as ToolResultMessages)
+        tool_result_messages = [
             msg
             for msg in responses
-            if isinstance(msg, AgentMessage) and msg.agent_id.startswith("TASK_AGENT")
+            if isinstance(msg, ToolResultMessage) and msg.tool_name == "execute_task"
         ]
-        assert len(task_agent_messages) > 0
+
+        # Debug: print all tool result messages
+        logger.debug(f"\nDEBUG: Found {len(tool_result_messages)} ToolResultMessages:")
+        for idx, msg in enumerate(tool_result_messages):
+            logger.debug(f"  [{idx}] tool_id={msg.tool_id}, result={msg.result[:100]}...")
+
+        assert len(tool_result_messages) >= 3, (
+            f"Expected at least 3 ToolResultMessages, got {len(tool_result_messages)}"
+        )
 
         # Verify FIFO order (tasks completed in order)
-        completion_messages = [
-            msg for msg in task_agent_messages if "completed successfully" in msg.content
-        ]
-        assert len(completion_messages) >= 3
+        # Check that we have results from all 3 tasks
+        all_results = " ".join(msg.result for msg in tool_result_messages)
+        for i in range(1, 4):
+            assert f"Task {i}" in all_results, (
+                f"Task {i} not found in combined results: {all_results}"
+            )
 
 
 class TestTaskSubsystemRealLLM:
@@ -952,7 +1021,7 @@ class TestTaskSubsystemRealLLM:
             create_responses.append(msg)
             msg_type = type(msg).__name__
             msg_content = getattr(msg, "content", "no content")[:100]
-            print(f"Create Response: {msg_type} - {msg_content}")
+            logger.debug(f"Create Response: {msg_type} - {msg_content}")
 
         # Verify task was created
         task_created = False
@@ -974,7 +1043,7 @@ class TestTaskSubsystemRealLLM:
             exec_responses.append(msg)
             msg_type = type(msg).__name__
             msg_content = getattr(msg, "content", "no content")[:100]
-            print(f"Exec Response: {msg_type} - {msg_content}")
+            logger.debug(f"Exec Response: {msg_type} - {msg_content}")
 
         # Verify task was executed
         assert any(
@@ -1018,7 +1087,7 @@ class TestTaskSubsystemRealLLM:
             create_responses.append(msg)
             msg_type = type(msg).__name__
             msg_content = getattr(msg, "content", "no content")[:100]
-            print(f"Create Response: {msg_type} - {msg_content}")
+            logger.debug(f"Create Response: {msg_type} - {msg_content}")
 
         # Verify task was created
         task_created = False
@@ -1036,7 +1105,7 @@ class TestTaskSubsystemRealLLM:
             list_responses.append(msg)
             msg_type = type(msg).__name__
             msg_content = getattr(msg, "content", "no content")[:100]
-            print(f"List Response: {msg_type} - {msg_content}")
+            logger.debug(f"List Response: {msg_type} - {msg_content}")
 
         # Verify list_tasks was called
         list_result = None
@@ -1078,7 +1147,7 @@ class TestTaskSubsystemRealLLM:
             create_responses.append(msg)
             msg_type = type(msg).__name__
             msg_content = getattr(msg, "content", "no content")[:100]
-            print(f"Create Response: {msg_type} - {msg_content}")
+            logger.debug(f"Create Response: {msg_type} - {msg_content}")
 
         # Verify task was created
         task_created = False
@@ -1096,7 +1165,7 @@ class TestTaskSubsystemRealLLM:
             exec_responses.append(msg)
             msg_type = type(msg).__name__
             msg_content = getattr(msg, "content", "no content")[:100]
-            print(f"Response: {msg_type} - {msg_content}")
+            logger.debug(f"Response: {msg_type} - {msg_content}")
 
         # Check if the agent recognized the missing parameter
         # The agent should either:
@@ -1157,7 +1226,7 @@ class TestTaskSubsystemRealLLM:
             exec_responses.append(msg)
             msg_type = type(msg).__name__
             msg_content = getattr(msg, "content", "no content")[:100]
-            print(f"Response: {msg_type} - {msg_content}")
+            logger.debug(f"Response: {msg_type} - {msg_content}")
 
         # Count execute_task tool calls
         tool_calls = []
@@ -1214,7 +1283,7 @@ class TestTaskSubsystemRealLLM:
             )
         ):
             responses.append(msg)
-            print(f"Response: {type(msg).__name__} - {getattr(msg, 'content', '')[:100]}")
+            logger.debug(f"Response: {type(msg).__name__} - {getattr(msg, 'content', '')[:100]}")
 
         # Find the created task ID
         task_id = None
@@ -1240,7 +1309,7 @@ class TestTaskSubsystemRealLLM:
             exec_responses.append(msg)
             msg_type = type(msg).__name__
             msg_content = getattr(msg, "content", "")[:100]
-            print(f"Exec Response: {msg_type} - {msg_content}")
+            logger.debug(f"Exec Response: {msg_type} - {msg_content}")
 
         # Verify task was executed
         assert any(

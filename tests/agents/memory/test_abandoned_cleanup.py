@@ -26,7 +26,9 @@ class TestAbandonedCleanup:
 
         # Create an in-progress turn
         turn_id = await memory_manager1.create_in_progress_turn(
-            user_query="Test query that will be abandoned", agent_id="TEST_AGENT"
+            user_query="Test query that will be abandoned",
+            agent_id="TEST_AGENT",
+            session_id="test-session-123",
         )
 
         # Verify it's in progress
@@ -93,7 +95,10 @@ class TestAbandonedCleanup:
 
         # Create a turn first
         turn_id = await memory_manager1.record_conversation_turn(
-            user_query="Test with tools", agent_response="Using tools...", agent_id="TEST_AGENT"
+            user_query="Test with tools",
+            agent_response="Using tools...",
+            agent_id="TEST_AGENT",
+            session_id="test-session",
         )
 
         # Create a pending approval tool
@@ -182,7 +187,10 @@ class TestAbandonedCleanup:
 
         # Verify we can still use the system normally
         turn_id = await memory_manager.record_conversation_turn(
-            user_query="Test after cleanup", agent_response="Working fine", agent_id="TEST_AGENT"
+            user_query="Test after cleanup",
+            agent_response="Working fine",
+            agent_id="TEST_AGENT",
+            session_id="test-session",
         )
 
         turn = await memory_manager.get_turn_by_id(turn_id)
@@ -207,6 +215,7 @@ class TestAbandonedCleanup:
             user_query="Completed query",
             agent_response="Done",
             agent_id="TEST_AGENT",
+            session_id="test-session",
             status=TurnStatus.COMPLETED,
         )
 
@@ -215,13 +224,17 @@ class TestAbandonedCleanup:
             user_query="Error query",
             agent_response="Failed",
             agent_id="TEST_AGENT",
+            session_id="test-session",
             status=TurnStatus.ERROR,
             error_details={"error": "Original error"},
         )
 
         # Create tools with various statuses
         turn_id = await memory_manager1.record_conversation_turn(
-            user_query="Test", agent_response="Test", agent_id="TEST_AGENT"
+            user_query="Test",
+            agent_response="Test",
+            agent_id="TEST_AGENT",
+            session_id="test-session",
         )
 
         # Approved tool

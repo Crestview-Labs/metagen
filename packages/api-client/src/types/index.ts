@@ -337,6 +337,7 @@ export interface ApiClientConfig {
   timeout?: number;
   retryAttempts?: number;
   headers?: Record<string, string>;
+  sessionId?: string;
 }
 
 // Export everything is already done above

@@ -67,6 +67,7 @@ class MemoryManager:
         self,
         user_query: str,
         agent_id: str,
+        session_id: str,
         source_entity: str = "USER",
         target_entity: Optional[str] = None,
         conversation_type: str = "USER_AGENT",
@@ -91,6 +92,7 @@ class MemoryManager:
         turn = ConversationTurn(
             id=turn_id,
             agent_id=agent_id,
+            session_id=session_id,
             turn_number=turn_number,
             timestamp=datetime.utcnow(),
             source_entity=source_entity,
@@ -167,6 +169,7 @@ class MemoryManager:
         user_query: str,
         agent_response: str,
         agent_id: str,
+        session_id: str = "",  # Default to empty string for backwards compatibility
         source_entity: str = "USER",
         target_entity: Optional[str] = None,
         conversation_type: str = "USER_AGENT",
@@ -219,6 +222,7 @@ class MemoryManager:
         turn = ConversationTurn(
             id=turn_id,
             agent_id=agent_id,
+            session_id=session_id,
             turn_number=turn_number,
             timestamp=datetime.utcnow(),
             source_entity=source_entity,
@@ -664,6 +668,7 @@ class MemoryManager:
         return await self.create_in_progress_turn(
             user_query=request.user_query,
             agent_id=request.agent_id,
+            session_id=request.session_id,
             task_id=request.task_id,
             source_entity=request.source_entity,
             target_entity=request.target_entity,

@@ -29,6 +29,7 @@ class ConversationTurn(TimestampedModel, table=True):
         default="METAGEN",
         description="Agent identifier (METAGEN, TASK_EXECUTION_123, etc.)",
     )
+    session_id: str = Field(index=True, description="Session identifier for multi-client routing")
     turn_number: int = Field(description="Sequential turn number for this agent")
     timestamp: datetime = Field(
         default_factory=datetime.utcnow, index=True, description="Turn start time"

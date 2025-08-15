@@ -17,13 +17,18 @@ import {
 
 export class MetagenApiClient {
   private api: AxiosInstance;
+  private sessionId: string;
   
   constructor(config: ApiClientConfig = {}) {
     const {
       baseUrl = 'http://127.0.0.1:8080',
       timeout = 30000,
-      retryAttempts = 3
+      retryAttempts = 3,
+      sessionId
     } = config;
+    
+    // Generate session ID if not provided
+    this.sessionId = sessionId || this.generateSessionId();
     
     this.api = axios.create({
       baseURL: baseUrl,
@@ -45,6 +50,25 @@ export class MetagenApiClient {
     );
   }
 
+  // Generate a unique session ID for this client instance
+  private generateSessionId(): string {
+    // Use crypto.randomUUID if available (Node.js 14.17+, modern browsers)
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+      return crypto.randomUUID();
+    }
+    // Fallback to manual UUID v4 generation
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = Math.random() * 16 | 0;
+      const v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
+
+  // Get the current session ID
+  getSessionId(): string {
+    return this.sessionId;
+  }
+
   // Server endpoints
   async getServerInfo(): Promise<ServerInfo> {
     const response: AxiosResponse<ServerInfo> = await this.api.get('/');
@@ -58,18 +82,22 @@ export class MetagenApiClient {
 
   // Chat endpoints
   async sendMessage(request: ChatRequest): Promise<ChatResponse> {
-    const response: AxiosResponse<ChatResponse> = await this.api.post('/api/chat', request);
+    // Add session_id to the request
+    const requestWithSession = { ...request, session_id: this.sessionId };
+    const response: AxiosResponse<ChatResponse> = await this.api.post('/api/chat', requestWithSession);
     return response.data;
   }
 
   async *sendMessageStream(request: ChatRequest): AsyncGenerator<StreamResponse, void, unknown> {
     try {
+      // Add session_id to the request
+      const requestWithSession = { ...request, session_id: this.sessionId };
       const response = await fetch(`${this.api.defaults.baseURL}/api/chat/stream`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(request),
+        body: JSON.stringify(requestWithSession),
       });
 
       if (!response.ok) {

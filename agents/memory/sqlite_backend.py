@@ -187,6 +187,7 @@ class SQLiteBackend(MemoryBackend):
             db_turn = ConversationTurn(
                 id=turn.id,
                 agent_id=turn.agent_id,
+                session_id=turn.session_id,
                 turn_number=turn.turn_number,
                 timestamp=turn.timestamp,
                 source_entity=turn.source_entity,

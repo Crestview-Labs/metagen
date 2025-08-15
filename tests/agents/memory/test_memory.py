@@ -30,6 +30,7 @@ class TestTurnManagement:
         request = TurnCreationRequest(
             user_query="What's the weather today?",
             agent_id="test-agent",
+            session_id="test-session",
             task_id="weather-task",
             source_entity="USER",
             target_entity="test-agent",
@@ -53,7 +54,9 @@ class TestTurnManagement:
     async def test_update_turn(self, memory_manager: MemoryManager) -> None:
         """Test updating a turn with typed request."""
         # Create a turn first
-        create_request = TurnCreationRequest(user_query="Calculate 2+2", agent_id="calc-agent")
+        create_request = TurnCreationRequest(
+            user_query="Calculate 2+2", agent_id="calc-agent", session_id="test-session"
+        )
         turn_id = await memory_manager.create_turn(create_request)
 
         # Update it
@@ -80,7 +83,9 @@ class TestTurnManagement:
         """Test completing a turn with tool usage."""
         # Create turn
         create_request = TurnCreationRequest(
-            user_query="Search for Python tutorials", agent_id="search-agent"
+            user_query="Search for Python tutorials",
+            agent_id="search-agent",
+            session_id="test-session",
         )
         turn_id = await memory_manager.create_turn(create_request)
 
@@ -132,7 +137,7 @@ class TestTurnManagement:
         """Test completing a turn with error status."""
         # Create turn
         create_request = TurnCreationRequest(
-            user_query="Do something impossible", agent_id="error-agent"
+            user_query="Do something impossible", agent_id="error-agent", session_id="test-session"
         )
         turn_id = await memory_manager.create_turn(create_request)
 
@@ -160,7 +165,9 @@ class TestToolUsageInterface:
         """Test recording tool usage with typed request."""
         # Create turn first
         turn_id = await memory_manager.create_turn(
-            TurnCreationRequest(user_query="Check my calendar", agent_id="calendar-agent")
+            TurnCreationRequest(
+                user_query="Check my calendar", agent_id="calendar-agent", session_id="test-session"
+            )
         )
 
         # Record tool usage
@@ -188,7 +195,9 @@ class TestToolUsageInterface:
         """Test tool approval with typed interface."""
         # Create turn and tool
         turn_id = await memory_manager.create_turn(
-            TurnCreationRequest(user_query="Delete files", agent_id="file-agent")
+            TurnCreationRequest(
+                user_query="Delete files", agent_id="file-agent", session_id="test-session"
+            )
         )
 
         tool_request = ToolUsageRequest(
@@ -219,7 +228,9 @@ class TestToolUsageInterface:
         """Test complete tool execution lifecycle with typed interface."""
         # Create turn and tool
         turn_id = await memory_manager.create_turn(
-            TurnCreationRequest(user_query="What time is it?", agent_id="time-agent")
+            TurnCreationRequest(
+                user_query="What time is it?", agent_id="time-agent", session_id="test-session"
+            )
         )
 
         tool_id = await memory_manager.record_tool_use(
@@ -270,7 +281,9 @@ class TestPerformanceMetrics:
         """Test tracking execution durations."""
         # Create and complete a turn with detailed timing
         turn_id = await memory_manager.create_turn(
-            TurnCreationRequest(user_query="Complex task", agent_id="perf-agent")
+            TurnCreationRequest(
+                user_query="Complex task", agent_id="perf-agent", session_id="test-session"
+            )
         )
 
         # Add tool for realistic scenario
@@ -335,7 +348,9 @@ class TestCriticalEdgeCases:
     async def test_concurrent_turn_updates(self, memory_manager: MemoryManager) -> None:
         """Test handling concurrent updates to the same turn."""
         # Create a turn
-        request = TurnCreationRequest(user_query="Concurrent test", agent_id="concurrent-agent")
+        request = TurnCreationRequest(
+            user_query="Concurrent test", agent_id="concurrent-agent", session_id="test-session"
+        )
         turn_id = await memory_manager.create_turn(request)
 
         # Simulate concurrent updates
@@ -374,7 +389,11 @@ class TestCriticalEdgeCases:
         """Test valid and invalid turn status transitions."""
         # Create turn
         turn_id = await memory_manager.create_turn(
-            TurnCreationRequest(user_query="Status transition test", agent_id="status-agent")
+            TurnCreationRequest(
+                user_query="Status transition test",
+                agent_id="status-agent",
+                session_id="test-session",
+            )
         )
 
         # Verify initial status
@@ -438,7 +457,10 @@ class TestCriticalEdgeCases:
 
         # Should handle large content
         turn_id = await memory_manager.record_conversation_turn(
-            user_query=large_query, agent_response=large_response, agent_id="large-content-agent"
+            user_query=large_query,
+            agent_response=large_response,
+            agent_id="large-content-agent",
+            session_id="test-session",
         )
 
         # Verify storage
@@ -459,7 +481,10 @@ class TestCriticalEdgeCases:
         num_turns = 25
         for i in range(num_turns):
             await memory_manager.record_conversation_turn(
-                user_query=f"Query {i}", agent_response=f"Response {i}", agent_id="pagination-agent"
+                user_query=f"Query {i}",
+                agent_response=f"Response {i}",
+                agent_id="pagination-agent",
+                session_id="test-session",
             )
 
         # Test limit
@@ -491,6 +516,7 @@ class TestConversationEnhancements:
             user_query="What's the weather?",
             agent_response="Let me check the weather for you.",
             agent_id="METAGEN",
+            session_id="test-session",
             source_entity="USER",
             target_entity="METAGEN",
             conversation_type="USER_AGENT",
@@ -514,6 +540,7 @@ class TestConversationEnhancements:
             user_query="execute_task: Generate weekly report",
             agent_response="Starting weekly report generation...",
             agent_id="TASK_EXECUTION_report_gen",
+            session_id="test-session",
             source_entity="METAGEN",
             target_entity="TASK_EXECUTION_report_gen",
             conversation_type="AGENT_AGENT",
@@ -532,7 +559,10 @@ class TestConversationEnhancements:
         """Test default values when entity fields not specified."""
         # Store without specifying entity fields
         turn_id = await memory_manager.record_conversation_turn(
-            user_query="Hello", agent_response="Hi there!", agent_id="METAGEN"
+            user_query="Hello",
+            agent_response="Hi there!",
+            agent_id="METAGEN",
+            session_id="test-session",
         )
 
         turn = await memory_manager.get_turn_by_id(turn_id)
@@ -553,6 +583,7 @@ class TestToolUsageLifecycle:
             user_query="Search my emails for urgent messages",
             agent_response="I'll search your emails for urgent messages.",
             agent_id="METAGEN",
+            session_id="test-session",
         )
 
         # Record tool proposal
@@ -590,6 +621,7 @@ class TestToolUsageLifecycle:
             user_query="Delete all files",
             agent_response="I'll delete all files.",
             agent_id="METAGEN",
+            session_id="test-session",
         )
 
         # Record dangerous tool
@@ -626,6 +658,7 @@ class TestToolUsageLifecycle:
             user_query="What time is it?",
             agent_response="Let me check the time.",
             agent_id="METAGEN",
+            session_id="test-session",
         )
 
         # Record tool (no approval needed)
@@ -681,6 +714,7 @@ class TestToolUsageQueries:
             user_query="Check calendar and send email",
             agent_response="I'll check your calendar and send the email.",
             agent_id="METAGEN",
+            session_id="test-session",
         )
 
         # Record multiple tools
@@ -722,13 +756,17 @@ class TestToolUsageQueries:
         """Test filtering pending approvals by entity."""
         # Create turns for different entities
         turn1 = await memory_manager.record_conversation_turn(
-            user_query="Meta task", agent_response="Processing...", agent_id="METAGEN"
+            user_query="Meta task",
+            agent_response="Processing...",
+            agent_id="METAGEN",
+            session_id="test-session",
         )
 
         turn2 = await memory_manager.record_conversation_turn(
             user_query="Task execution",
             agent_response="Executing...",
             agent_id="TASK_EXECUTION_123",
+            session_id="test-session",
             source_entity="METAGEN",
             target_entity="TASK_EXECUTION_123",
             conversation_type="AGENT_AGENT",
@@ -778,6 +816,7 @@ class TestDatabaseConsistency:
             turn = ConversationTurn(
                 id="test-turn",
                 agent_id="METAGEN",
+                session_id="test-session",
                 turn_number=1,
                 timestamp=datetime.utcnow(),
                 source_entity="USER",

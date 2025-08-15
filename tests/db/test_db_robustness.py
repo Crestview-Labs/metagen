@@ -8,6 +8,7 @@ Tests focus on:
 """
 
 import asyncio
+import logging
 import random
 import string
 from datetime import datetime
@@ -23,6 +24,8 @@ from agents.memory.sqlite_backend import SQLiteBackend
 from common.models import ConversationTurn, ToolUsage, ToolUsageStatus, TurnStatus
 from db.engine import DatabaseEngine
 
+logger = logging.getLogger(__name__)
+
 
 def create_test_turn(**kwargs: Any) -> ConversationTurn:
     """Helper to create ConversationTurn with all required fields."""
@@ -30,6 +33,7 @@ def create_test_turn(**kwargs: Any) -> ConversationTurn:
     required_fields = {
         "id": kwargs.get("id", "test-turn"),
         "agent_id": kwargs.get("agent_id", "TEST_AGENT"),
+        "session_id": kwargs.get("session_id", "test-session"),
         "turn_number": kwargs.get("turn_number", 1),
         "timestamp": kwargs.get("timestamp", datetime.utcnow()),
         "source_entity": kwargs.get("source_entity", "USER"),
@@ -92,6 +96,7 @@ class TestConcurrentWrites:
                 turn = create_test_turn(
                     id=f"{agent_id}-turn-{i + 1}",  # Add ID
                     agent_id=agent_id,
+                    session_id=f"session-{agent_id}",
                     turn_number=i + 1,
                     timestamp=datetime.utcnow(),
                     source_entity="USER",
@@ -148,7 +153,7 @@ class TestConcurrentWrites:
                 await robust_backend.store_turn(turn)
                 success_count += 1
             except Exception as e:
-                print(f"Failed with: {e}")
+                logger.info(f"Failed with: {e}")
                 failure_count += 1
 
         # Try to write the same turn from multiple tasks
@@ -244,6 +249,7 @@ class TestTransactionAtomicity:
                 turn1 = ConversationTurn(
                     id="turn-1",
                     agent_id=agent_id,
+                    session_id="rollback-test-session",
                     turn_number=1,
                     timestamp=datetime.utcnow(),
                     source_entity="USER",
@@ -305,6 +311,7 @@ class TestTransactionAtomicity:
             turn = ConversationTurn(
                 id=turn_id,
                 agent_id="NESTED_TEST",
+                session_id="nested-test-session",
                 turn_number=1,
                 timestamp=datetime.utcnow(),
                 source_entity="USER",
@@ -558,7 +565,7 @@ class TestPerformanceUnderLoad:
 
         # Calculate writes per second
         writes_per_second = num_turns / duration
-        print(f"Bulk write performance: {writes_per_second:.2f} writes/second")
+        logger.info(f"Bulk write performance: {writes_per_second:.2f} writes/second")
 
     @pytest.mark.asyncio
     async def test_concurrent_read_write_performance(self, robust_backend: SQLiteBackend) -> None:
@@ -611,7 +618,7 @@ class TestPerformanceUnderLoad:
 
         duration = (end_time - start_time).total_seconds()
         ops_per_second = num_operations / duration
-        print(f"Mixed workload performance: {ops_per_second:.2f} ops/second")
+        logger.info(f"Mixed workload performance: {ops_per_second:.2f} ops/second")
 
 
 class TestSQLiteSpecificFeatures:
@@ -651,6 +658,7 @@ class TestSQLiteSpecificFeatures:
                     turn = ConversationTurn(
                         id="long-tx-turn",
                         agent_id="LONG_TX",
+                        session_id="test-session",  # Add required session_id
                         turn_number=1,
                         timestamp=datetime.utcnow(),
                         source_entity="USER",
