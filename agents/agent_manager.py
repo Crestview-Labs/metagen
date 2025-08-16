@@ -3,6 +3,7 @@ creation."""
 
 import asyncio
 import logging
+import time
 from typing import Any, AsyncIterator, Optional
 
 from agents.base import BaseAgent
@@ -99,6 +100,8 @@ class AgentManager:
 
         # Session-based routing infrastructure
         self._session_queues: dict[str, asyncio.Queue[Message]] = {}
+        self._session_last_activity: dict[str, float] = {}  # Track last activity time
+        self._session_ttl_seconds: float = 300.0  # 5 minute TTL by default
 
         # SINGLE shared output channel for all agents
         self.unified_agent_output: asyncio.Queue = asyncio.Queue()
@@ -148,6 +151,9 @@ class AgentManager:
             logger.info(f"📝 Registered new session: {session_id}")
         else:
             logger.debug(f"♻️ Reusing existing session: {session_id}")
+
+        # Update last activity time
+        self._session_last_activity[session_id] = time.time()
         return self._session_queues[session_id]
 
     def unregister_session(self, session_id: str) -> None:
@@ -165,7 +171,33 @@ class AgentManager:
                 except asyncio.QueueEmpty:
                     break
             del self._session_queues[session_id]
+
+            # Clean up activity tracking
+            if session_id in self._session_last_activity:
+                del self._session_last_activity[session_id]
+
             logger.info(f"🗑️ Unregistered session: {session_id}")
+
+    async def _cleanup_expired_sessions(self) -> None:
+        """Clean up sessions that have exceeded their TTL.
+
+        This is called from within the router loop to avoid race conditions.
+        """
+        current_time = time.time()
+        expired_sessions = []
+
+        # Find expired sessions
+        for session_id, last_activity in list(self._session_last_activity.items()):
+            if current_time - last_activity > self._session_ttl_seconds:
+                expired_sessions.append(session_id)
+
+        # Clean up expired sessions
+        for session_id in expired_sessions:
+            elapsed = current_time - self._session_last_activity.get(session_id, current_time)
+            logger.info(
+                f"⏰ Cleaning up expired session: {session_id} (inactive for {elapsed:.0f}s)"
+            )
+            self.unregister_session(session_id)
 
     def configure_tool_approval(
         self, require_approval: bool = False, auto_approve_tools: Optional[set[str]] = None
@@ -345,12 +377,26 @@ class AgentManager:
         error_count = 0
         max_consecutive_errors = 10  # Higher threshold for router
         message_count = 0
+        last_cleanup_time = time.time()
+        cleanup_interval_seconds = 60.0  # Check for expired sessions every minute
 
         while True:
             try:
-                # Wait for output from any agent
+                # Periodically clean up expired sessions
+                current_time = time.time()
+                if current_time - last_cleanup_time > cleanup_interval_seconds:
+                    await self._cleanup_expired_sessions()
+                    last_cleanup_time = current_time
+
+                # Wait for output from any agent (with timeout for periodic cleanup)
                 logger.info("[Router] Waiting for message from unified_agent_output...")
-                msg = await self.unified_agent_output.get()
+                try:
+                    msg = await asyncio.wait_for(
+                        self.unified_agent_output.get(), timeout=cleanup_interval_seconds
+                    )
+                except asyncio.TimeoutError:
+                    # No messages, but continue loop to check cleanup
+                    continue
                 logger.info(f"[Router] Got {type(msg).__name__} from unified_agent_output")
                 message_count += 1
                 self._log_message(msg, "📨")
@@ -462,6 +508,10 @@ class AgentManager:
                 # Normal routing for all other messages
                 logger.info(f"[Router] Routing {type(msg).__name__} to session {msg.session_id}")
                 await self._session_queues[msg.session_id].put(msg)
+
+                # Update session activity time
+                self._session_last_activity[msg.session_id] = time.time()
+
                 logger.info(f"[Router] Routed {type(msg).__name__} to session {msg.session_id}")
 
                 # Reset error count on successful routing
@@ -629,6 +679,42 @@ class AgentManager:
             logger.error(f"Initialization failed: {e}", exc_info=True)
             raise ValueError(f"Failed to initialize: {str(e)}")
 
+    async def route_incoming_message(self, message: Message) -> None:
+        """Route incoming message to appropriate agent based on agent_id.
+
+        This is the central routing method that ensures all messages flow through
+        the AgentManager for proper routing and session management.
+
+        Args:
+            message: The message to route, must include session_id and agent_id
+
+        Raises:
+            ValueError: If session_id or agent_id is missing or invalid
+        """
+        # Validate required fields
+        if not message.session_id:
+            raise ValueError("session_id is required for routing")
+        if not message.agent_id:
+            raise ValueError("agent_id is required for routing")
+
+        # Update session activity time
+        self._session_last_activity[message.session_id] = time.time()
+
+        # Route based on agent_id
+        if message.agent_id == "METAGEN":
+            logger.info(
+                f"📤 Routing {type(message).__name__} to MetaAgent (session: {message.session_id})"
+            )
+            await self.meta_agent_input.put(message)
+        elif self.task_agent and message.agent_id == self.task_agent.agent_id:
+            logger.info(
+                f"📤 Routing {type(message).__name__} to TaskExecutionAgent "
+                f"(session: {message.session_id})"
+            )
+            await self.task_agent_input.put(message)
+        else:
+            raise ValueError(f"Unknown agent_id: {message.agent_id}")
+
     async def chat_stream(self, message: Message) -> AsyncIterator[Message]:
         """
         Stream messages for a specific session.
@@ -654,19 +740,17 @@ class AgentManager:
         session_queue = self.register_session(message.session_id)
 
         try:
-            # Route message to appropriate agent based on agent_id
-            if message.agent_id == "METAGEN" or not message.agent_id:
-                logger.info(f"📤 Sending {type(message).__name__} to MetaAgent")
-                await self.meta_agent_input.put(message)
-            elif self.task_agent and message.agent_id == self.task_agent.agent_id:
-                logger.info(f"📤 Sending {type(message).__name__} to TaskExecutionAgent")
-                await self.task_agent_input.put(message)
-            else:
-                logger.error(f"Unknown agent_id: {message.agent_id}")
+            # Use centralized routing - ensure agent_id is set
+            if not message.agent_id:
+                message.agent_id = "METAGEN"  # Default to METAGEN for backward compatibility
+
+            # Route message through centralized router
+            try:
+                await self.route_incoming_message(message)
+            except ValueError as e:
+                logger.error(f"Routing error: {e}")
                 yield ErrorMessage(
-                    agent_id=message.agent_id,  # Keep the unknown agent_id for debugging
-                    session_id=message.session_id,
-                    error=f"Unknown agent: {message.agent_id}",
+                    agent_id=message.agent_id, session_id=message.session_id, error=str(e)
                 )
                 return
 
@@ -723,13 +807,11 @@ class AgentManager:
             f"decision={approval_message.decision}, agent_id={approval_message.agent_id}"
         )
 
-        # Route to the appropriate agent based on agent_id
-        if approval_message.agent_id == "METAGEN":
-            await self.meta_agent_input.put(approval_message)
-        elif approval_message.agent_id == self.task_agent.agent_id if self.task_agent else None:
-            await self.task_agent_input.put(approval_message)
-        else:
-            logger.warning(f"Unknown agent_id in approval response: {approval_message.agent_id}")
+        # Use centralized routing for approval messages
+        try:
+            await self.route_incoming_message(approval_message)
+        except ValueError as e:
+            logger.warning(f"Failed to route approval response: {e}")
 
     async def _intercept_execute_task(
         self,
@@ -892,7 +974,8 @@ class AgentManager:
                 session_id=session_id,  # Preserved from MetaAgent's session
                 content=task_prompt,
             )
-            await self.task_agent_input.put(task_message)
+            # Use centralized routing instead of direct queue access
+            await self.route_incoming_message(task_message)
 
             logger.info(f"Sent task '{task.name}' to TaskExecutionAgent, waiting for completion")
 

@@ -64,7 +64,7 @@ class TestChatStream:
 
     def test_stream_without_session_id(self, client: TestClient) -> None:
         """Test streaming without session_id (should auto-generate)."""
-        request = ChatRequest(message="Hello without session!")
+        request = ChatRequest(message="Hello without session!", session_id="test-auto-session")
 
         response = client.post(
             "/api/chat/stream", json=request.model_dump(), headers={"Accept": "text/event-stream"}

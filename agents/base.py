@@ -530,8 +530,27 @@ class BaseAgent(ABC):
 
         # No valid tools?
         if valid_tools == 0:
+            # Process rejected tools to return errors to LLM
+            rejected_executions = self._handle_rejected_tools(session_id)
+
+            # Yield error messages for each rejected tool
+            for tool_call, error_result in rejected_executions:
+                yield ToolErrorMessage(
+                    agent_id=self.agent_id,
+                    session_id=session_id,
+                    tool_id=tool_call.id,
+                    tool_name=tool_call.name,
+                    error=error_result.error or "Tool not found",
+                )
+
+            # Clean up tracker
             self._tool_tracker = None
-            yield []  # Empty execution list
+
+            # Return executions with errors so LLM knows what happened
+            executions = [
+                ToolExecution(tool_call=tc, result=res) for tc, res in rejected_executions
+            ]
+            yield executions
             return
 
         # Check for pending approvals
@@ -861,6 +880,44 @@ class BaseAgent(ABC):
             results.append(error_result)
 
         return results
+
+    def _handle_rejected_tools(self, session_id: str) -> list[tuple[ToolCall, ToolCallResult]]:
+        """Process rejected tools and return them as error executions.
+
+        Returns a list of (ToolCall, ToolCallResult) tuples for each rejected tool.
+        """
+        if not self._tool_tracker:
+            return []
+
+        rejected_tools = self._tool_tracker.get_tools_by_stage(ToolExecutionStage.REJECTED)
+        executions = []
+
+        for tool in rejected_tools:
+            # Create error result
+            error_result = ToolCallResult(
+                tool_name=tool.tool_name,
+                tool_call_id=tool.tool_id,
+                agent_id=self.agent_id,
+                session_id=session_id,
+                content=tool.error or "Tool not found",
+                is_error=True,
+                error=tool.error or "Tool not found",
+                error_type=ToolErrorType.INVALID_ARGS,
+                user_display=tool.error,
+            )
+
+            # Create tool call
+            tool_call = ToolCall(
+                id=tool.tool_id,
+                name=tool.tool_name,
+                arguments=tool.tool_args,
+                agent_id=self.agent_id,
+                session_id=session_id,
+            )
+
+            executions.append((tool_call, error_result))
+
+        return executions
 
     async def _create_turn(self, messages: list[Message]) -> str:
         """Create a new conversation turn."""

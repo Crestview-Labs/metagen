@@ -1055,7 +1055,7 @@ class TestTaskSubsystemRealLLM:
         # Verify both agents participated
         agent_ids = set()
         for msg in exec_responses:
-            if isinstance(msg, AgentMessage):
+            if msg.agent_id:
                 agent_ids.add(msg.agent_id)
 
         assert "METAGEN" in agent_ids
@@ -1321,7 +1321,7 @@ class TestTaskSubsystemRealLLM:
         # Verify both agents participated
         agent_ids = set()
         for msg in exec_responses:
-            if isinstance(msg, AgentMessage):
+            if msg.agent_id:
                 agent_ids.add(msg.agent_id)
 
         assert "METAGEN" in agent_ids

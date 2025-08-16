@@ -1,8 +1,8 @@
-"""Initial schema
+"""Initial schema with session support
 
-Revision ID: 0b97d6f2e6b7
+Revision ID: 8a455df84e66
 Revises:
-Create Date: 2025-08-03 19:59:45.870860
+Create Date: 2025-08-15 10:08:58.012916
 
 """
 
@@ -13,7 +13,7 @@ import sqlmodel
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "0b97d6f2e6b7"
+revision: str = "8a455df84e66"
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -61,6 +61,7 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(), nullable=False),
         sa.Column("id", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column("agent_id", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+        sa.Column("session_id", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column("turn_number", sa.Integer(), nullable=False),
         sa.Column("timestamp", sa.DateTime(), nullable=False),
         sa.Column("source_entity", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
@@ -78,7 +79,7 @@ def upgrade() -> None:
         sa.Column("agent_metadata", sa.JSON(), nullable=True),
         sa.Column(
             "status",
-            sa.Enum("in_progress", "completed", "error", "partial", "abandoned", name="turnstatus"),
+            sa.Enum("IN_PROGRESS", "COMPLETED", "ERROR", "PARTIAL", "ABANDONED", name="turnstatus"),
             nullable=False,
         ),
         sa.Column("error_details", sa.JSON(), nullable=True),
@@ -109,6 +110,9 @@ def upgrade() -> None:
     )
     op.create_index(
         op.f("ix_conversation_turns_agent_id"), "conversation_turns", ["agent_id"], unique=False
+    )
+    op.create_index(
+        op.f("ix_conversation_turns_session_id"), "conversation_turns", ["session_id"], unique=False
     )
     op.create_index(
         op.f("ix_conversation_turns_task_id"), "conversation_turns", ["task_id"], unique=False
@@ -228,6 +232,7 @@ def downgrade() -> None:
     op.drop_table("long_term_memories")
     op.drop_index(op.f("ix_conversation_turns_timestamp"), table_name="conversation_turns")
     op.drop_index(op.f("ix_conversation_turns_task_id"), table_name="conversation_turns")
+    op.drop_index(op.f("ix_conversation_turns_session_id"), table_name="conversation_turns")
     op.drop_index(op.f("ix_conversation_turns_agent_id"), table_name="conversation_turns")
     op.drop_index("idx_turns_target_entity", table_name="conversation_turns")
     op.drop_index("idx_turns_source_entity", table_name="conversation_turns")
