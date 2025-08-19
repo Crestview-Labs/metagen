@@ -16,10 +16,10 @@
     "lint": "eslint src --ext .ts,.tsx"
   },
   "dependencies": {
-    "@metagen/api-client": "workspace:*",
     "chalk": "^5.3.0",
     "commander": "^11.1.0",
     "ink": "^5.2.0",
+    "open": "^10.0.0",
     "ora": "^8.0.1",
     "react": "^18.0.0",
     "react-devtools-core": "^4.28.5",

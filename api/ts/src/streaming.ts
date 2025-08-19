@@ -1,10 +1,10 @@
 /**
- * SSE Streaming wrapper for Metagen API v2025.08.19.152833
- * Generated: 2025-08-19T15:28:35.118767+00:00
+ * SSE Streaming wrapper for Metagen API v0.1.1
+ * Generated: 2025-08-19T21:14:18.851410+00:00
  */
 
-import { OpenAPI } from '../generated/index.js';
-import type { ChatRequest } from '../generated/index.js';
+import { OpenAPI, ChatService } from '../generated/index.js';
+import type { ChatRequest, CancelablePromise } from '../generated/index.js';
 
 export interface StreamOptions {
   signal?: AbortSignal;
@@ -12,12 +12,11 @@ export interface StreamOptions {
   retryDelay?: number;
 }
 
-export interface SSEMessage {
-  id?: string;
-  event?: string;
-  data: string;
-  retry?: number;
-}
+// Extract the SSE message type from the generated service
+// This extracts the union type from the ChatService.chatStreamApiChatStreamPost return type
+type ExtractPromiseType<T> = T extends CancelablePromise<infer U> ? U : never;
+type ChatStreamReturnType = ReturnType<typeof ChatService.chatStreamApiChatStreamPost>;
+export type SSEMessage = ExtractPromiseType<ChatStreamReturnType>;
 
 export async function* parseSSEStream(
   response: Response,
@@ -49,10 +48,12 @@ export async function* parseSSEStream(
             return;
           }
           
-          yield {
-            data,
-            event: 'message'
-          };
+          try {
+            const message = JSON.parse(data) as SSEMessage;
+            yield message;
+          } catch (e) {
+            console.warn('Failed to parse SSE data:', data);
+          }
         }
       }
     }
@@ -78,7 +79,7 @@ export class MetagenStreamingClient {
   /**
    * Stream chat responses using Server-Sent Events
    */
-  async *chatStream(request: ChatRequest): AsyncGenerator<any, void, unknown> {
+  async *chatStream(request: ChatRequest): AsyncGenerator<SSEMessage, void, unknown> {
     const response = await fetch(`${this.baseURL}/api/chat/stream`, {
       method: 'POST',
       headers: {
@@ -92,16 +93,14 @@ export class MetagenStreamingClient {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    for await (const sseMessage of parseSSEStream(response)) {
-      try {
-        const data = JSON.parse(sseMessage.data);
-        yield data;
-        if (data.type === 'complete') return;
-      } catch (e) {
-        console.warn('Failed to parse SSE data:', sseMessage.data);
+    for await (const message of parseSSEStream(response)) {
+      yield message;
+      // Check if this is an AgentMessage with final flag set
+      if (message.type === 'agent' && (message as any).final) {
+        return;
       }
     }
   }
 }
 
-export const VERSION = '2025.08.19.152833';
+export const VERSION = '0.1.1';

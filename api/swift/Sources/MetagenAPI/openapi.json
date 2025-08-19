@@ -3,7 +3,7 @@
   "info": {
     "title": "Metagen Backend API",
     "description": "HTTP API for Metagen superintelligent personal agent",
-    "version": "2025.08.19.152833"
+    "version": "0.1.1"
   },
   "paths": {
     "/api/chat/approval-response": {
@@ -68,10 +68,50 @@
         },
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "Server-Sent Event stream of messages",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/UserMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AgentMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SystemMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ThinkingMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ToolCallMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApprovalRequestMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApprovalResponseMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ToolStartedMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ToolResultMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ToolErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/UsageMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ],
+                  "title": "Response Chat Stream Api Chat Stream Post"
+                }
               }
             }
           },
@@ -749,6 +789,44 @@
   },
   "components": {
     "schemas": {
+      "AgentMessage": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/MessageType",
+            "default": "agent"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id",
+            "default": "METAGEN"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "final": {
+            "type": "boolean",
+            "title": "Final",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "content"
+        ],
+        "title": "AgentMessage",
+        "description": "Agent chat message."
+      },
       "ApprovalDecision": {
         "type": "string",
         "enum": [
@@ -757,6 +835,50 @@
         ],
         "title": "ApprovalDecision",
         "description": "Tool approval decisions."
+      },
+      "ApprovalRequestMessage": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/MessageType",
+            "default": "approval_request"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id",
+            "default": "METAGEN"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "tool_id": {
+            "type": "string",
+            "title": "Tool Id"
+          },
+          "tool_name": {
+            "type": "string",
+            "title": "Tool Name"
+          },
+          "tool_args": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Tool Args"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "tool_id",
+          "tool_name",
+          "tool_args"
+        ],
+        "title": "ApprovalRequestMessage",
+        "description": "Agent requests approval for a specific tool."
       },
       "ApprovalResponse": {
         "properties": {
@@ -982,6 +1104,51 @@
         "title": "ChatRequest",
         "description": "Request to send a message to the agent."
       },
+      "ErrorMessage": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/MessageType",
+            "default": "error"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id",
+            "default": "METAGEN"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "error"
+        ],
+        "title": "ErrorMessage",
+        "description": "Error message from agent."
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1056,6 +1223,176 @@
         "title": "SystemInfo",
         "description": "System information response."
       },
+      "SystemMessage": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/MessageType",
+            "default": "system"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id",
+            "default": "METAGEN"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "content"
+        ],
+        "title": "SystemMessage",
+        "description": "System message for agent context."
+      },
+      "ThinkingMessage": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/MessageType",
+            "default": "thinking"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id",
+            "default": "METAGEN"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "content"
+        ],
+        "title": "ThinkingMessage",
+        "description": "Agent thinking indicator."
+      },
+      "ToolCallMessage": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/MessageType",
+            "default": "tool_call"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id",
+            "default": "METAGEN"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "tool_calls": {
+            "items": {
+              "$ref": "#/components/schemas/ToolCallRequest"
+            },
+            "type": "array",
+            "title": "Tool Calls"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "tool_calls"
+        ],
+        "title": "ToolCallMessage",
+        "description": "LLM wants to call tools - contains all tool call details."
+      },
+      "ToolCallRequest": {
+        "properties": {
+          "tool_id": {
+            "type": "string",
+            "title": "Tool Id"
+          },
+          "tool_name": {
+            "type": "string",
+            "title": "Tool Name"
+          },
+          "tool_args": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Tool Args"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tool_id",
+          "tool_name",
+          "tool_args"
+        ],
+        "title": "ToolCallRequest",
+        "description": "A single tool call request from the LLM."
+      },
+      "ToolErrorMessage": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/MessageType",
+            "default": "tool_error"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id",
+            "default": "METAGEN"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "tool_id": {
+            "type": "string",
+            "title": "Tool Id"
+          },
+          "tool_name": {
+            "type": "string",
+            "title": "Tool Name"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "tool_id",
+          "tool_name",
+          "error"
+        ],
+        "title": "ToolErrorMessage",
+        "description": "Agent sends tool execution error."
+      },
       "ToolInfo": {
         "properties": {
           "name": {
@@ -1081,6 +1418,86 @@
         "title": "ToolInfo",
         "description": "Information about an available tool."
       },
+      "ToolResultMessage": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/MessageType",
+            "default": "tool_result"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id",
+            "default": "METAGEN"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "tool_id": {
+            "type": "string",
+            "title": "Tool Id"
+          },
+          "tool_name": {
+            "type": "string",
+            "title": "Tool Name"
+          },
+          "result": {
+            "title": "Result"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "tool_id",
+          "tool_name",
+          "result"
+        ],
+        "title": "ToolResultMessage",
+        "description": "Agent sends tool execution result."
+      },
+      "ToolStartedMessage": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/MessageType",
+            "default": "tool_started"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id",
+            "default": "METAGEN"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "tool_id": {
+            "type": "string",
+            "title": "Tool Id"
+          },
+          "tool_name": {
+            "type": "string",
+            "title": "Tool Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "tool_id",
+          "tool_name"
+        ],
+        "title": "ToolStartedMessage",
+        "description": "Agent notifies tool execution started."
+      },
       "ToolsResponse": {
         "properties": {
           "tools": {
@@ -1102,6 +1519,49 @@
         ],
         "title": "ToolsResponse",
         "description": "Tools listing response."
+      },
+      "UsageMessage": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/MessageType",
+            "default": "usage"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id",
+            "default": "METAGEN"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "input_tokens": {
+            "type": "integer",
+            "title": "Input Tokens"
+          },
+          "output_tokens": {
+            "type": "integer",
+            "title": "Output Tokens"
+          },
+          "total_tokens": {
+            "type": "integer",
+            "title": "Total Tokens"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "input_tokens",
+          "output_tokens",
+          "total_tokens"
+        ],
+        "title": "UsageMessage",
+        "description": "Token usage information."
       },
       "UserMessage": {
         "properties": {

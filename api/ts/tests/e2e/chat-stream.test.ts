@@ -30,7 +30,7 @@ async function collectStreamMessages(
     count++;
     
     // Check for final message
-    if (message.type === 'agent' && message.final) {
+    if (message.type === 'agent' && (message as any).final) {
       break;
     }
     
@@ -170,7 +170,7 @@ describe('Chat Stream E2E Tests', () => {
             }, 500);
           }
           
-          if (message.type === 'agent' && message.final) {
+          if (message.type === 'agent' && (message as any).final) {
             break;
           }
         }

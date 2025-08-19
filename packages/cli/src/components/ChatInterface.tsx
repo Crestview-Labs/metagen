@@ -1,7 +1,22 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Box, Text, useInput, useApp, Spacer, Static } from 'ink';
-import { apiClient, ChatResponse, StreamResponse } from '@metagen/api-client';
+import { 
+  AuthenticationService,
+  ChatService,
+  ToolsService,
+  SystemService,
+  MemoryService,
+  MetagenStreamingClient,
+  OpenAPI,
+  type SSEMessage,
+  ApprovalDecision,
+  MessageType,
+  type ApprovalResponseMessage
+} from '../../../../api/ts/src/index.js';
 import { ToolApprovalPrompt } from './ToolApprovalPrompt.js';
+
+// Configure API base URL
+OpenAPI.BASE = process.env.METAGEN_API_URL || 'http://localhost:8080';
 
 interface Message {
   id: string;
@@ -32,10 +47,10 @@ export const ChatInterface: React.FC = () => {
   useEffect(() => {
     const checkAuth = async () => {
       try {
-        const isAuth = await apiClient.isAuthenticated();
-        setAuthenticated(isAuth);
+        const auth = await AuthenticationService.getAuthStatusApiAuthStatusGet();
+        setAuthenticated(auth.authenticated);
         
-        if (!isAuth) {
+        if (!auth.authenticated) {
           addMessage('system', '⚠️  You are not authenticated. Type "/auth login" to authenticate with Google services.', 'error');
         } else {
           addMessage('system', '🤖 Welcome to Metagen interactive chat!\n\n💡 Tips:\n  • Type your message and press Enter\n  • Use "/help" for commands\n  • Press Ctrl+C to exit\n  • Type "/clear" to clear chat history', 'system');
@@ -70,15 +85,19 @@ export const ChatInterface: React.FC = () => {
     
     try {
       // Send the approval decision to the API
-      await apiClient.sendToolDecision({
-        type: 'approval_response' as any,  // Type assertion needed due to enum mismatch
-        direction: 'user_to_agent' as any,
-        tool_id: pendingApproval.tool_id,
-        decision: (approved ? 'approved' : 'rejected') as any,
-        feedback: feedback,
-        agent_id: pendingApproval.agent_id || 'default',
-        timestamp: new Date().toISOString()
-      } as any);
+      const approvalMessage: ApprovalResponseMessage = {
+        type: MessageType.APPROVAL_RESPONSE,
+        timestamp: new Date().toISOString(),
+        agent_id: (pendingApproval as any).agent_id || 'USER',
+        session_id: sessionId || '',
+        tool_id: (pendingApproval as any).tool_id,
+        decision: approved ? ApprovalDecision.APPROVED : ApprovalDecision.REJECTED,
+        feedback: feedback
+      };
+      
+      await ChatService.handleApprovalResponseApiChatApprovalResponsePost({
+        requestBody: approvalMessage
+      });
       
       // Clear the pending approval and feedback state
       setPendingApproval(null);
@@ -120,7 +139,7 @@ export const ChatInterface: React.FC = () => {
       case 'auth':
         if (args[0] === 'status') {
           try {
-            const auth = await apiClient.getAuthStatus();
+            const auth = await AuthenticationService.getAuthStatusApiAuthStatusGet();
             if (auth.authenticated) {
               addMessage('system', `✅ Authenticated${auth.user_info?.email ? ` as ${auth.user_info.email}` : ''}`, 'system');
             } else {
@@ -131,7 +150,9 @@ export const ChatInterface: React.FC = () => {
           }
         } else if (args[0] === 'login') {
           try {
-            const response = await apiClient.login();
+            const response = await AuthenticationService.loginApiAuthLoginPost({
+              requestBody: { force: false }
+            });
             addMessage('system', `🔐 ${response.message}\n🌐 Open: ${response.auth_url}`, 'system');
           } catch (error) {
             addMessage('system', `❌ Login failed: ${error instanceof Error ? error.message : error}`, 'error');
@@ -141,7 +162,7 @@ export const ChatInterface: React.FC = () => {
         
       case 'tools':
         try {
-          const tools = await apiClient.getTools();
+          const tools = await ToolsService.getToolsApiToolsGet();
           const toolsList = tools.tools.map((tool, i) => `  ${i + 1}. ${tool.name} - ${tool.description}`).join('\n');
           addMessage('system', `🔧 Available Tools (${tools.count}):\n\n${toolsList}`, 'system');
         } catch (error) {
@@ -152,10 +173,8 @@ export const ChatInterface: React.FC = () => {
       case 'system':
         if (args[0] === 'health') {
           try {
-            const health = await apiClient.getSystemHealth();
-            const status = health.status.toUpperCase();
-            const components = health.components ? Object.entries(health.components).map(([k, v]) => `  ${k}: ${v}`).join('\n') : '';
-            addMessage('system', `🏥 System Health: ${status}\n\n${components}`, 'system');
+            await SystemService.healthCheckApiSystemHealthGet();
+            addMessage('system', `🏥 System Health: HEALTHY`, 'system');
           } catch (error) {
             addMessage('system', `❌ Health check failed: ${error instanceof Error ? error.message : error}`, 'error');
           }
@@ -192,29 +211,45 @@ export const ChatInterface: React.FC = () => {
 
     try {
       // Use streaming API
-      const streamGenerator = apiClient.sendMessageStream({ message: userMessage });
+      const client = new MetagenStreamingClient();
+      // Generate a session ID if we don't have one
+      if (!sessionId) {
+        const newSessionId = Math.random().toString(36).substring(2) + Date.now().toString(36);
+        setSessionId(newSessionId);
+      }
       
-      for await (const streamResponse of streamGenerator) {
-        if (streamResponse.type === 'complete') {
-          // Store session ID from completion
-          if (streamResponse.session_id && !sessionId) {
-            setSessionId(streamResponse.session_id);
-          }
+      const streamGenerator = client.chatStream({ message: userMessage, session_id: sessionId || '' });
+      
+      for await (const message of streamGenerator) {
+        // Check for completion (AgentMessage with final flag)
+        if (message.type === MessageType.AGENT && (message as any).final) {
           break;
         }
         
         // Handle different response types
-        if (streamResponse.type === 'approval_request') {
-          // Extract approval request data
-          const approvalRequest = streamResponse.metadata?.approval_request;
-          if (approvalRequest) {
-            setPendingApproval(approvalRequest);
-            // Still add the message to the chat
-            addMessage('agent', streamResponse.content, 'approval_request', streamResponse.metadata);
-          }
-        } else {
-          const messageType = streamResponse.type === 'chat' ? 'agent' : streamResponse.type as Message['type'];
-          addMessage('agent', streamResponse.content, messageType, streamResponse.metadata);
+        switch (message.type) {
+          case MessageType.AGENT:
+            addMessage('agent', (message as any).content, 'agent', (message as any).metadata);
+            break;
+          case MessageType.THINKING:
+            addMessage('system', (message as any).content, 'thinking', (message as any).metadata);
+            break;
+          case MessageType.TOOL_CALL:
+            addMessage('system', `🔧 Calling tool: ${(message as any).tool_name}`, 'tool_call', { tool_id: (message as any).tool_id });
+            break;
+          case MessageType.TOOL_RESULT:
+            addMessage('system', `✅ Result from ${(message as any).tool_name}`, 'tool_result', { tool_id: (message as any).tool_id });
+            break;
+          case MessageType.TOOL_ERROR:
+            addMessage('system', `❌ Tool error: ${(message as any).error}`, 'error', { tool_id: (message as any).tool_id });
+            break;
+          case MessageType.APPROVAL_REQUEST:
+            setPendingApproval(message);
+            addMessage('system', `🔐 Tool requires approval: ${(message as any).tool_name}`, 'approval_request', { tool_id: (message as any).tool_id });
+            break;
+          case MessageType.ERROR:
+            addMessage('system', `❌ ${(message as any).message}`, 'error', {});
+            break;
         }
       }
       

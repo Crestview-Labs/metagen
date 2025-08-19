@@ -1,5 +1,5 @@
-// SSE Streaming wrapper for Metagen API v2025.08.19.152833
-// Generated: 2025-08-19T15:28:35.210329+00:00
+// SSE Streaming wrapper for Metagen API v0.1.1
+// Generated: 2025-08-19T21:14:18.930648+00:00
 
 import Foundation
 import OpenAPIRuntime

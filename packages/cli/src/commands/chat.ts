@@ -3,7 +3,10 @@ import React from 'react';
 import { render } from 'ink';
 import chalk from 'chalk';
 import App from '../components/App.js';
-import { apiClient } from '@metagen/api-client';
+import { SystemService, OpenAPI, MetagenStreamingClient } from '../../../../api/ts/src/index.js';
+
+// Configure API base URL
+OpenAPI.BASE = process.env.METAGEN_API_URL || 'http://localhost:8080';
 
 export const chatCommand = new Command('chat')
   .description('Chat with the metagen agent')
@@ -12,7 +15,13 @@ export const chatCommand = new Command('chat')
   .action(async (message, options) => {
     try {
       // Check if backend is running
-      const isHealthy = await apiClient.isServerHealthy();
+      let isHealthy = false;
+      try {
+        await SystemService.healthCheckApiSystemHealthGet();
+        isHealthy = true;
+      } catch {
+        isHealthy = false;
+      }
       if (!isHealthy) {
         console.error(chalk.red('❌ Backend server is not running. Please start it with: npm run start:backend'));
         process.exit(1);
@@ -56,56 +65,59 @@ export const chatCommand = new Command('chat')
         console.log(chalk.green('\n🤖 Agent Response:'));
         
         let sessionId = null;
-        const streamGenerator = apiClient.sendMessageStream({ message });
+        const client = new MetagenStreamingClient();
+        const streamGenerator = client.chatStream({ message, session_id: sessionId || '' });
         
-        for await (const streamResponse of streamGenerator) {
-          if (streamResponse.type === 'complete') {
-            sessionId = streamResponse.session_id;
+        for await (const message of streamGenerator) {
+          // Check for completion (AgentMessage with final flag)
+          if (message.type === 'agent' && (message as any).final) {
             break;
           }
           
           // Format different response types
-          switch (streamResponse.type) {
-            case 'chat':
-              // Main chat response content
-              console.log(streamResponse.content);
+          switch (message.type) {
+            case 'agent':
+              // Main agent response content
+              console.log((message as any).content);
               break;
             case 'thinking':
-              console.log(chalk.yellow(`${streamResponse.content}`));
+              console.log(chalk.yellow(`${(message as any).content}`));
               break;
             case 'tool_call':
-              console.log(chalk.magenta(`${streamResponse.content}`));
+              console.log(chalk.magenta(`🔧 Calling tool: ${(message as any).tool_name}`));
               break;
             case 'tool_started':
-              console.log(chalk.blue(`▶️  ${streamResponse.content}`));
+              console.log(chalk.blue(`▶️  Started: ${(message as any).tool_name}`));
               break;
             case 'tool_result':
-              console.log(chalk.cyan(`${streamResponse.content}`));
+              console.log(chalk.cyan(`✅ Result from ${(message as any).tool_name}`));
               break;
             case 'tool_error':
-              console.log(chalk.red(`❌ Tool error: ${streamResponse.content}`));
+              console.log(chalk.red(`❌ Tool error: ${(message as any).error}`));
               break;
             case 'approval_request':
-              console.log(chalk.yellow.bold(`🔐 Tool requires approval: ${streamResponse.content}`));
+              console.log(chalk.yellow.bold(`🔐 Tool requires approval: ${(message as any).tool_name}`));
               console.log(chalk.yellow('Note: Run in interactive mode to approve/reject tools'));
               break;
             case 'approval_response':
-              // Check decision in metadata
-              const decision = streamResponse.metadata?.decision;
+              const decision = (message as any).decision;
               if (decision === 'approved') {
-                console.log(chalk.green(`✅ Tool approved: ${streamResponse.content}`));
+                console.log(chalk.green(`✅ Tool approved`));
               } else if (decision === 'rejected') {
-                console.log(chalk.red(`❌ Tool rejected: ${streamResponse.content}`));
+                console.log(chalk.red(`❌ Tool rejected`));
               }
               break;
             case 'usage':
               // Token usage - skip in normal output
               break;
             case 'error':
-              console.log(chalk.red(`❌ ${streamResponse.content}`));
+              console.log(chalk.red(`❌ ${(message as any).message}`));
               break;
             default:
-              console.log(streamResponse.content);
+              // User or system messages
+              if ('content' in message) {
+                console.log((message as any).content);
+              }
           }
         }
         

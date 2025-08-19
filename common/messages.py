@@ -184,6 +184,9 @@ AnyMessage = Union[
     ErrorMessage,
 ]
 
+# SSE streaming message type - used for documenting the streaming endpoint
+SSEMessage = AnyMessage  # Alias for clarity in API documentation
+
 
 # Helper functions for message creation
 def create_user_message(agent_id: str, session_id: str, content: str) -> UserMessage:

@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from agents.agent_manager import AgentManager
-from common.messages import ApprovalResponseMessage, UserMessage
+from common.messages import ApprovalResponseMessage, SSEMessage, UserMessage
 
 from ..models.chat import ApprovalResponse, ChatRequest
 
@@ -56,7 +56,11 @@ async def handle_approval_response(
         raise HTTPException(status_code=500, detail=f"Failed to process approval: {str(e)}")
 
 
-@chat_router.post("/chat/stream")
+@chat_router.post(
+    "/chat/stream",
+    response_model=SSEMessage,  # Document the SSE message types (each event is one message)
+    response_description="Server-Sent Event stream of messages",
+)
 async def chat_stream(request: Request, chat_request: ChatRequest) -> StreamingResponse:
     """Stream chat responses as they are generated."""
     logger.info(f"[API ENDPOINT] /chat/stream called with {chat_request}")

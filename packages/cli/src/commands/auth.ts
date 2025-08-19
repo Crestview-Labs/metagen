@@ -1,7 +1,10 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
-import { apiClient } from '@metagen/api-client';
+import { AuthenticationService, OpenAPI } from '../../../../api/ts/src/index.js';
+
+// Configure API base URL
+OpenAPI.BASE = process.env.METAGEN_API_URL || 'http://localhost:8080';
 
 export const authCommand = new Command('auth')
   .description('Authentication commands');
@@ -13,7 +16,7 @@ authCommand
     const spinner = ora('Checking authentication status...').start();
     
     try {
-      const status = await apiClient.getAuthStatus();
+      const status = await AuthenticationService.getAuthStatusApiAuthStatusGet();
       spinner.stop();
       
       if (status.authenticated) {
@@ -27,7 +30,7 @@ authCommand
       }
     } catch (error) {
       spinner.stop();
-      console.error(chalk.red(`❌ Error checking auth status: ${error instanceof Error ? error.message : error}`));
+      console.error(chalk.red(`❌ Error checking auth status: ${error instanceof Error ? error.message : String(error)}`));
       process.exit(1);
     }
   });
@@ -40,41 +43,54 @@ authCommand
     const spinner = ora('Initiating Google OAuth login...').start();
     
     try {
-      const response = await apiClient.login(options.force);
+      const response = await AuthenticationService.loginApiAuthLoginPost({
+        requestBody: { force: options.force || false }
+      });
       spinner.stop();
       
-      console.log(chalk.blue('🔐 Google OAuth Login'));
-      console.log(chalk.gray(response.message));
-      console.log(chalk.yellow(`\n🌐 Open this URL in your browser:`));
-      console.log(chalk.cyan(response.auth_url));
-      console.log(chalk.gray('\nWaiting for authentication...'));
-      
-      // Poll for authentication status
-      const pollInterval = setInterval(async () => {
+      if (response.auth_url) {
+        console.log(chalk.blue('🔐 Google OAuth Login'));
+        console.log(chalk.gray(response.message || 'Login required'));
+        console.log(chalk.yellow(`\n🌐 Open this URL in your browser:`));
+        console.log(chalk.cyan(response.auth_url));
+        console.log(chalk.gray('\nWaiting for authentication...'));
+        
+        // Try to open the URL in the browser
         try {
-          const status = await apiClient.getAuthStatus();
-          if (status.authenticated) {
-            clearInterval(pollInterval);
-            clearTimeout(timeoutId);
-            console.log(chalk.green('\n✅ Authentication successful!'));
-            if (status.user_info?.email) {
-              console.log(chalk.gray(`   Logged in as: ${status.user_info.email}`));
-            }
-          }
+          const open = (await import('open')).default;
+          await open(response.auth_url);
         } catch {
-          // Continue polling
+          // Ignore errors - user can manually open the URL
         }
-      }, 2000);
-      
-      // Stop polling after 5 minutes
-      const timeoutId = setTimeout(() => {
-        clearInterval(pollInterval);
-        console.log(chalk.yellow('\n⏰ Authentication timeout. Please try again.'));
-      }, 300000);
-      
+        
+        // Poll for authentication status
+        const pollInterval = setInterval(async () => {
+          try {
+            const status = await AuthenticationService.getAuthStatusApiAuthStatusGet();
+            if (status.authenticated) {
+              clearInterval(pollInterval);
+              clearTimeout(timeoutId);
+              console.log(chalk.green('\n✅ Authentication successful!'));
+              if (status.user_info?.email) {
+                console.log(chalk.gray(`   Logged in as: ${status.user_info.email}`));
+              }
+            }
+          } catch {
+            // Continue polling
+          }
+        }, 2000);
+        
+        // Stop polling after 5 minutes
+        const timeoutId = setTimeout(() => {
+          clearInterval(pollInterval);
+          console.log(chalk.yellow('\n⏰ Authentication timeout. Please try again.'));
+        }, 300000);
+      } else {
+        console.log(chalk.green('✅ ' + (response.message || 'Already authenticated')));
+      }
     } catch (error) {
       spinner.stop();
-      console.error(chalk.red(`❌ Login error: ${error instanceof Error ? error.message : error}`));
+      console.error(chalk.red(`❌ Login error: ${error instanceof Error ? error.message : String(error)}`));
       process.exit(1);
     }
   });
@@ -86,14 +102,13 @@ authCommand
     const spinner = ora('Logging out...').start();
     
     try {
-      const response = await apiClient.logout();
+      await AuthenticationService.logoutApiAuthLogoutPost();
       spinner.stop();
       
       console.log(chalk.green('✅ Logged out successfully'));
-      console.log(chalk.gray(response.message));
     } catch (error) {
       spinner.stop();
-      console.error(chalk.red(`❌ Logout error: ${error instanceof Error ? error.message : error}`));
+      console.error(chalk.red(`❌ Logout error: ${error instanceof Error ? error.message : String(error)}`));
       process.exit(1);
     }
   });

@@ -16,13 +16,9 @@ for arg in "$@"; do
             MODE="release"
             echo "📝 Running in RELEASE mode (strict checks)"
             ;;
-        --force-tests)
-            FORCE_TESTS=true
-            echo "📝 Forcing all tests to run"
-            ;;
-        --skip-tests)
-            SKIP_TESTS=true
-            echo "⚠️  WARNING: Skipping all tests"
+        --run-api-tests)
+            RUN_API_TESTS=true
+            echo "📝 Will run API tests"
             ;;
         --check-only)
             CHECK_ONLY=true
@@ -32,9 +28,21 @@ for arg in "$@"; do
             FORCE_STUBS=true
             echo "📝 Forcing stub regeneration"
             ;;
+        --bump-patch)
+            BUMP_VERSION="patch"
+            echo "📝 Will bump patch version (x.y.Z)"
+            ;;
+        --bump-minor)
+            BUMP_VERSION="minor"
+            echo "📝 Will bump minor version (x.Y.0)"
+            ;;
+        --bump-major)
+            BUMP_VERSION="major"
+            echo "📝 Will bump major version (X.0.0)"
+            ;;
         *)
             echo "Unknown option: $arg"
-            echo "Usage: $0 [--dev|--release|--force-tests|--skip-tests|--check-only|--force-stubs]"
+            echo "Usage: $0 [--dev|--release|--run-api-tests|--check-only|--force-stubs|--bump-patch|--bump-minor|--bump-major]"
             exit 1
             ;;
     esac
@@ -64,24 +72,73 @@ print_info() {
     echo -e "${BLUE}ℹ${NC} $1"
 }
 
+# Check for required platform (macOS)
+echo ""
+echo "🔍 Checking platform..."
+if [[ "$OSTYPE" != "darwin"* ]]; then
+    print_error "This build requires macOS"
+    exit 1
+fi
+print_status "Running on macOS"
+
 # Check for required tools
 echo ""
 echo "🔍 Checking dependencies..."
 command -v git >/dev/null 2>&1 || { print_error "git is required"; exit 1; }
-command -v jq >/dev/null 2>&1 || { print_error "jq is required. Install with: brew install jq (macOS) or apt-get install jq (Linux)"; exit 1; }
+command -v jq >/dev/null 2>&1 || { print_error "jq is required. Install with: brew install jq"; exit 1; }
 command -v uv >/dev/null 2>&1 || { print_error "uv is required. Install from: https://astral.sh/uv"; exit 1; }
 command -v node >/dev/null 2>&1 || { print_error "node is required"; exit 1; }
 command -v pnpm >/dev/null 2>&1 || { print_error "pnpm is required. Install with: npm install -g pnpm"; exit 1; }
 
-# Check for optional Swift/Xcode (macOS only)
-SWIFT_TESTS_ENABLED=false
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    if command -v xcrun >/dev/null 2>&1 && xcrun --find swift >/dev/null 2>&1; then
-        SWIFT_TESTS_ENABLED=true
-        print_status "Xcode/Swift found - Swift tests available"
-    else
-        print_warning "Xcode not found - Swift tests will be skipped"
+# Check for required Xcode/Swift
+if ! command -v xcrun >/dev/null 2>&1 || ! xcrun --find swift >/dev/null 2>&1; then
+    print_error "Xcode is required. Install from the App Store or run: xcode-select --install"
+    exit 1
+fi
+print_status "Xcode/Swift found"
+
+# Handle version bumping if requested
+if [[ -n "$BUMP_VERSION" ]]; then
+    echo ""
+    echo "📝 Bumping version..."
+    
+    if [ ! -f "version.json" ]; then
+        print_error "version.json not found!"
+        exit 1
     fi
+    
+    CURRENT_VERSION=$(jq -r '.version' version.json)
+    
+    # Parse semantic version
+    IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+    
+    # Bump version based on type
+    case $BUMP_VERSION in
+        patch)
+            NEW_PATCH=$((PATCH + 1))
+            NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+            ;;
+        minor)
+            NEW_MINOR=$((MINOR + 1))
+            NEW_VERSION="${MAJOR}.${NEW_MINOR}.0"
+            ;;
+        major)
+            NEW_MAJOR=$((MAJOR + 1))
+            NEW_VERSION="${NEW_MAJOR}.0.0"
+            ;;
+    esac
+    
+    print_info "Bumping version from $CURRENT_VERSION to $NEW_VERSION"
+    
+    # Update version.json
+    jq ".version = \"$NEW_VERSION\" | .release_date = \"$(date -u +%Y-%m-%d)\"" version.json > version.json.tmp
+    mv version.json.tmp version.json
+    
+    print_status "Version updated to $NEW_VERSION"
+    
+    # Mark that stubs need regeneration due to version change
+    FORCE_STUBS=true
+    VERSION_BUMPED=true
 fi
 
 # Git-based change detection
@@ -137,13 +194,13 @@ if [ -f "api/ts/src/version.ts" ]; then
         print_warning "TypeScript stubs are out of date (v$TS_VERSION != v$CURRENT_VERSION)"
     fi
 else
-    if [[ "$VERSION_CHANGED" == "true" ]] || [[ "$API_CHANGED" == "true" ]]; then
+    if [[ "$VERSION_CHANGED" == "true" ]] || [[ "$API_CHANGED" == "true" ]] || [[ "$VERSION_BUMPED" == "true" ]]; then
         STUBS_FRESH=false
         print_warning "TypeScript stubs not found"
     fi
 fi
 
-if [ "$SWIFT_TESTS_ENABLED" = true ] && [ -f "api/swift/Sources/MetagenAPI/Version.swift" ]; then
+if [ -f "api/swift/Sources/MetagenAPI/Version.swift" ]; then
     SWIFT_VERSION=$(grep "version =" api/swift/Sources/MetagenAPI/Version.swift 2>/dev/null | grep -o '"[^"]*"' | tr -d '"' || echo "none")
     if [[ "$SWIFT_VERSION" != "$CURRENT_VERSION" ]]; then
         STUBS_FRESH=false
@@ -151,7 +208,13 @@ if [ "$SWIFT_TESTS_ENABLED" = true ] && [ -f "api/swift/Sources/MetagenAPI/Versi
     fi
 fi
 
-# Enforce rules (except in dev mode)
+# If version was bumped, always regenerate stubs
+if [[ "$VERSION_BUMPED" == "true" ]]; then
+    STUBS_FRESH=false
+    print_info "Version was bumped - regenerating stubs"
+fi
+
+# Enforce rules (except in dev mode or when forcing stub regeneration)
 if [[ "$MODE" != "dev" ]]; then
     # Rule 1: API changes require version bump
     if [[ "$API_CHANGED" == "true" ]] && [[ "$VERSION_CHANGED" == "false" ]]; then
@@ -163,8 +226,8 @@ if [[ "$MODE" != "dev" ]]; then
         exit 1
     fi
     
-    # Rule 2: Version changes require fresh stubs
-    if [[ "$VERSION_CHANGED" == "true" ]] && [[ "$STUBS_FRESH" == "false" ]]; then
+    # Rule 2: Version changes require fresh stubs (unless we're forcing regeneration)
+    if [[ "$VERSION_CHANGED" == "true" ]] && [[ "$STUBS_FRESH" == "false" ]] && [[ "$FORCE_STUBS" != "true" ]]; then
         print_error "Version updated but stubs are stale!"
         print_error "Please regenerate stubs using:"
         print_error "  uv run python generate_stubs.py"
@@ -173,28 +236,18 @@ if [[ "$MODE" != "dev" ]]; then
     fi
 fi
 
-# Determine what tests to run
+# Determine what tests to run - only run when explicitly requested
 RUN_PYTHON_TESTS=false
 RUN_TS_TESTS=false
 RUN_SWIFT_TESTS=false
 
-if [[ "$SKIP_TESTS" != "true" ]]; then
-    if [[ "$FORCE_TESTS" == "true" ]] || [[ "$VERSION_CHANGED" == "true" ]]; then
-        # Force all tests
-        RUN_PYTHON_TESTS=true
-        RUN_TS_TESTS=true
-        RUN_SWIFT_TESTS=$SWIFT_TESTS_ENABLED
-        print_info "Running all tests (version changed or forced)"
-    else
-        # Intelligent test selection
-        [[ "$PYTHON_API_CHANGED" == "true" ]] && RUN_PYTHON_TESTS=true
-        [[ "$TS_STUBS_CHANGED" == "true" ]] && RUN_TS_TESTS=true
-        [[ "$SWIFT_STUBS_CHANGED" == "true" ]] && [[ "$SWIFT_TESTS_ENABLED" == "true" ]] && RUN_SWIFT_TESTS=true
-        
-        if [[ "$RUN_PYTHON_TESTS" == "false" ]] && [[ "$RUN_TS_TESTS" == "false" ]] && [[ "$RUN_SWIFT_TESTS" == "false" ]]; then
-            print_info "No relevant changes detected - skipping tests"
-        fi
-    fi
+if [[ "$RUN_API_TESTS" == "true" ]]; then
+    RUN_PYTHON_TESTS=true
+    RUN_TS_TESTS=true
+    RUN_SWIFT_TESTS=true
+    print_info "API tests explicitly requested"
+else
+    print_info "Skipping tests (use --run-api-tests to run them)"
 fi
 
 # Check-only mode
@@ -262,12 +315,8 @@ if [[ "$STUB_GEN_NEEDED" == "true" ]]; then
         # Install Python dependencies for generation script
         uv pip install requests pyyaml
         
-        # Run generation with appropriate flags
-        if [[ "$FORCE_STUBS" == "true" ]]; then
-            uv run python generate_stubs.py --force || { print_error "Stub generation failed!"; exit 1; }
-        else
-            uv run python generate_stubs.py || { print_error "Stub generation failed!"; exit 1; }
-        fi
+        # Run generation (no special flags needed - it always regenerates)
+        uv run python generate_stubs.py || { print_error "Stub generation failed!"; exit 1; }
         
         print_status "API stubs generated successfully"
         
@@ -344,7 +393,7 @@ if [[ "$RUN_TS_TESTS" == "true" ]] && [ -d "api/ts" ]; then
     cd ../..
     print_status "TypeScript tests passed"
 elif [ -d "api/ts" ]; then
-    print_info "Skipping TypeScript tests (no changes)"
+    print_info "Skipping TypeScript tests (use --run-api-tests to run them)"
 fi
 
 # Run Swift client tests if needed
@@ -355,8 +404,8 @@ if [[ "$RUN_SWIFT_TESTS" == "true" ]] && [ -d "api/swift" ]; then
     swift test || { print_error "Swift tests failed!"; exit 1; }
     cd ../..
     print_status "Swift tests passed"
-elif [ "$SWIFT_TESTS_ENABLED" = true ] && [ -d "api/swift" ]; then
-    print_info "Skipping Swift tests (no changes)"
+elif [ -d "api/swift" ]; then
+    print_info "Skipping Swift tests (use --run-api-tests to run them)"
 fi
 
 echo ""
@@ -371,6 +420,8 @@ cp bundle/metagen.js build/artifacts/ 2>/dev/null || true
 cp version.json build/artifacts/
 echo "$CURRENT_VERSION" > build/artifacts/VERSION
 
+# E2E tests removed - use --run-api-tests for testing
+
 # Summary
 echo ""
 echo "✨ Build Summary"
@@ -382,11 +433,12 @@ echo "  Tests run:"
 [[ "$RUN_PYTHON_TESTS" == "true" ]] && echo "    - Python API tests ✓"
 [[ "$RUN_TS_TESTS" == "true" ]] && echo "    - TypeScript tests ✓"
 [[ "$RUN_SWIFT_TESTS" == "true" ]] && echo "    - Swift tests ✓"
-[[ "$SKIP_TESTS" == "true" ]] && echo "    - NONE (skipped)"
+[[ "$RUN_API_TESTS" != "true" ]] && echo "    - NONE (use --run-api-tests to run tests)"
 echo "  Artifacts: build/artifacts/"
 echo ""
 echo "📋 Next steps:"
 [[ "$STUBS_FRESH" == "false" ]] && echo "  - Generate stubs: uv run python generate_stubs.py"
+[[ "$RUN_API_TESTS" != "true" ]] && echo "  - Run tests: ./build.sh --run-api-tests"
 echo "  - Start backend: uv run python main.py"
 echo "  - Start CLI: ./bundle/metagen.js"
 echo "  - Or run both: pnpm run dev"

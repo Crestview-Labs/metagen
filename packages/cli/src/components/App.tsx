@@ -6,7 +6,10 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Box, Text, useInput, useApp, useStdin, Static } from 'ink';
-import { apiClient } from '@metagen/api-client';
+import { AuthenticationService, OpenAPI } from '../../../../api/ts/src/index.js';
+
+// Configure API base URL
+OpenAPI.BASE = process.env.METAGEN_API_URL || 'http://localhost:8080';
 import { useTextBuffer } from './TextBuffer.js';
 import { useMetagenStream } from '../hooks/useMetagenStream.js';
 import { InputPrompt } from './InputPrompt.js';
@@ -82,10 +85,10 @@ export const App: React.FC = () => {
   useEffect(() => {
     const checkAuth = async () => {
       try {
-        const isAuth = await apiClient.isAuthenticated();
-        setAuthenticated(isAuth);
+        const auth = await AuthenticationService.getAuthStatusApiAuthStatusGet();
+        setAuthenticated(auth.authenticated);
         
-        if (!isAuth) {
+        if (!auth.authenticated) {
           addMessage('system', '⚠️  You are not authenticated. Type "/auth login" to authenticate with Google services.', 'error');
         } else {
           addMessage('system', '🤖 Welcome to Metagen!\n\n💡 Tips:\n  • Type your message and press Enter\n  • Use "/" for commands (try "/help")\n  • Press Ctrl+C to exit\n  • Advanced text editing: Ctrl+A/E (home/end), Ctrl+W (delete word), Ctrl+arrows (word nav)', 'system');
@@ -138,8 +141,11 @@ export const App: React.FC = () => {
       } else if (input === 'n' || input === 'N') {
         handleToolDecision(false);
       } else if (input === 'd' || input === 'D') {
-        // TODO: Show more details about the tool
-        addMessage('system', 'Tool details: ' + JSON.stringify(pendingApproval.tool_args, null, 2), 'system');
+        // Show more details about the tool
+        const details = pendingApproval.tool_args 
+          ? JSON.stringify(pendingApproval.tool_args, null, 2)
+          : 'No arguments';
+        addMessage('system', 'Tool details: ' + details, 'system');
       }
     }
   });
@@ -180,8 +186,6 @@ export const App: React.FC = () => {
               <Text color="magenta" bold>  ├─ {message.content}</Text>
             ) : message.type === 'thinking' ? (
               <Text color="yellow" dimColor>  ├─ {message.content}</Text>
-            ) : message.type === 'processing' ? (
-              <Text color="yellow" dimColor>  ├─ {message.content}</Text>
             ) : message.type === 'tool_result' ? (
               <Text color="gray" dimColor>  ├─ {message.content}</Text>
             ) : message.type === 'system' ? (
@@ -190,10 +194,6 @@ export const App: React.FC = () => {
               <Text color="red">❌ {message.content}</Text>
             ) : message.type === 'approval_request' ? (
               <Text color="yellow" bold>  ├─ {message.content}</Text>
-            ) : message.type === 'tool_approved' ? (
-              <Text color="green">  ├─ {message.content}</Text>
-            ) : message.type === 'tool_rejected' ? (
-              <Text color="red">  ├─ {message.content}</Text>
             ) : null}
           </Box>
         ))}

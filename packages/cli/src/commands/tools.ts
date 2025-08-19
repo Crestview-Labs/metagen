@@ -1,7 +1,10 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
-import { apiClient } from '@metagen/api-client';
+import { ToolsService, OpenAPI } from '../../../../api/ts/src/index.js';
+
+// Configure API base URL
+OpenAPI.BASE = process.env.METAGEN_API_URL || 'http://localhost:8080';
 
 export const toolsCommand = new Command('tools')
   .description('List available tools')
@@ -11,8 +14,8 @@ export const toolsCommand = new Command('tools')
     
     try {
       const response = options.googleOnly 
-        ? await apiClient.getGoogleTools()
-        : await apiClient.getTools();
+        ? await ToolsService.getGoogleToolsApiToolsGoogleGet()
+        : await ToolsService.getToolsApiToolsGet();
       
       spinner.stop();
       
@@ -24,7 +27,7 @@ export const toolsCommand = new Command('tools')
         return;
       }
       
-      response.tools.forEach((tool, index) => {
+      response.tools.forEach((tool: any, index: number) => {
         console.log(chalk.green(`${index + 1}. ${tool.name}`));
         console.log(chalk.gray(`   ${tool.description}`));
         
@@ -40,7 +43,7 @@ export const toolsCommand = new Command('tools')
       
     } catch (error) {
       spinner.stop();
-      console.error(chalk.red(`❌ Error fetching tools: ${error instanceof Error ? error.message : error}`));
+      console.error(chalk.red(`❌ Error fetching tools: ${error instanceof Error ? error.message : String(error)}`));
       process.exit(1);
     }
   });

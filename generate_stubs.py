@@ -19,6 +19,7 @@ import yaml
 # Configuration
 API_BASE_URL = "http://localhost:8080"
 VERSION_FILE = Path("api/version.json")
+MAIN_VERSION_FILE = Path("version.json")
 
 
 def load_version_data() -> dict[str, Any]:
@@ -97,6 +98,13 @@ def generate_typescript_stubs(spec_path: Path, version: str) -> bool:
     if output_dir.exists():
         print("   Cleaning up old TypeScript stubs...")
         shutil.rmtree(output_dir)
+
+    # Also clean dist directory to ensure fresh builds
+    dist_dir = Path("api/ts/dist")
+    if dist_dir.exists():
+        print("   Cleaning up old TypeScript build artifacts...")
+        shutil.rmtree(dist_dir)
+
     output_dir.mkdir(exist_ok=True)
 
     # Try @hey-api/openapi-ts first (modern maintained fork)
@@ -123,7 +131,8 @@ def generate_typescript_stubs(spec_path: Path, version: str) -> bool:
         # Fix imports for ES modules
         fix_typescript_imports(output_dir)
         print(f"✅ TypeScript stubs generated (v{version})")
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as e:
+        print(f"   @hey-api/openapi-ts failed: {e.stderr if hasattr(e, 'stderr') else str(e)}")
         # Fallback to openapi-typescript-codegen
         print("   Falling back to openapi-typescript-codegen...")
         cmd_fallback = [
@@ -181,8 +190,8 @@ export const API_VERSION = "{version}";
  * Generated: {datetime.now(timezone.utc).isoformat()}
  */
 
-import {{ OpenAPI }} from '../generated/index';
-import type {{ ChatRequest }} from '../generated/index';
+import {{ OpenAPI, ChatService }} from '../generated/index';
+import type {{ ChatRequest, CancelablePromise }} from '../generated/index';
 
 export interface StreamOptions {{
   signal?: AbortSignal;
@@ -190,12 +199,11 @@ export interface StreamOptions {{
   retryDelay?: number;
 }}
 
-export interface SSEMessage {{
-  id?: string;
-  event?: string;
-  data: string;
-  retry?: number;
-}}
+// Extract the SSE message type from the generated service
+// This extracts the union type from the ChatService.chatStreamApiChatStreamPost return type
+type ExtractPromiseType<T> = T extends CancelablePromise<infer U> ? U : never;
+type ChatStreamReturnType = ReturnType<typeof ChatService.chatStreamApiChatStreamPost>;
+export type SSEMessage = ExtractPromiseType<ChatStreamReturnType>;
 
 export async function* parseSSEStream(
   response: Response,
@@ -227,10 +235,12 @@ export async function* parseSSEStream(
             return;
           }}
           
-          yield {{
-            data,
-            event: 'message'
-          }};
+          try {{
+            const message = JSON.parse(data) as SSEMessage;
+            yield message;
+          }} catch (e) {{
+            console.warn('Failed to parse SSE data:', data);
+          }}
         }}
       }}
     }}
@@ -256,7 +266,7 @@ export class MetagenStreamingClient {{
   /**
    * Stream chat responses using Server-Sent Events
    */
-  async *chatStream(request: ChatRequest): AsyncGenerator<any, void, unknown> {{
+  async *chatStream(request: ChatRequest): AsyncGenerator<SSEMessage, void, unknown> {{
     const response = await fetch(`${{this.baseURL}}/api/chat/stream`, {{
       method: 'POST',
       headers: {{
@@ -270,13 +280,11 @@ export class MetagenStreamingClient {{
       throw new Error(`HTTP error! status: ${{response.status}}`);
     }}
 
-    for await (const sseMessage of parseSSEStream(response)) {{
-      try {{
-        const data = JSON.parse(sseMessage.data);
-        yield data;
-        if (data.type === 'complete') return;
-      }} catch (e) {{
-        console.warn('Failed to parse SSE data:', sseMessage.data);
+    for await (const message of parseSSEStream(response)) {{
+      yield message;
+      // Check if this is an AgentMessage with final flag set
+      if (message.type === 'agent' && (message as any).final) {{
+        return;
       }}
     }}
   }}
@@ -422,7 +430,7 @@ public class MetagenStreamingClient {{
         AsyncThrowingStream {{ continuation in
             Task {{
                 do {{
-                    let url = baseURL.appendingPathComponent("/chat/stream")
+                    let url = baseURL.appendingPathComponent("/api/chat/stream")
                     var request = URLRequest(url: url)
                     request.httpMethod = "POST"
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -526,52 +534,63 @@ def main() -> None:
     parser.add_argument("--skip-swift", action="store_true", help="Skip Swift generation")
     args = parser.parse_args()
 
-    # Load or initialize version
-    version_data = load_version_data()
+    # Load main project version
+    if not MAIN_VERSION_FILE.exists():
+        print("❌ Main version.json not found!")
+        sys.exit(1)
 
-    # Generate new timestamp-based version
+    with open(MAIN_VERSION_FILE) as f:
+        main_version_data = json.load(f)
+
+    project_version = main_version_data["version"]
+
+    # Load or initialize API version tracking
+    version_data = load_version_data()
     now = datetime.now(timezone.utc)
-    new_version = now.strftime("%Y.%m.%d.%H%M%S")
 
     print("🚀 Metagen Stub Generation")
-    print(f"   Version: {new_version}")
+    print(f"   Version: {project_version}")
     print("=" * 50)
 
     # Fetch current OpenAPI spec
     current_spec = fetch_openapi_spec()
 
     # Save spec
-    current_spec["info"]["version"] = new_version
+    current_spec["info"]["version"] = project_version
     spec_path = Path("api/openapi.json")
     save_spec(current_spec, spec_path)
 
     # Generate TypeScript stubs
     if not args.skip_typescript:
-        if not generate_typescript_stubs(spec_path, new_version):
+        if not generate_typescript_stubs(spec_path, project_version):
             print("⚠️  TypeScript generation had issues")
 
     # Generate Swift stubs
     if not args.skip_swift:
-        if not generate_swift_stubs(spec_path, new_version):
+        if not generate_swift_stubs(spec_path, project_version):
             print("⚠️  Swift generation had issues")
 
     # Update version tracking
     version_data = {
-        "version": new_version,
+        "version": project_version,
         "generated_at": now.isoformat(),
-        "typescript": {"version": new_version, "generated": now.isoformat()},
-        "swift": {"version": new_version, "generated": now.isoformat()},
+        "typescript": {"version": project_version, "generated": now.isoformat()},
+        "swift": {"version": project_version, "generated": now.isoformat()},
     }
     save_version_data(version_data)
 
     print("\n" + "=" * 50)
     print("✨ Stub generation complete!")
-    print(f"   Version: {new_version}")
+    print(f"   Version: {project_version}")
     print("\n📋 Next steps:")
     if not args.skip_typescript:
-        print("  TypeScript: cd api/ts && npm install && npm run build")
+        print("  TypeScript:")
+        print("    Build:  cd api/ts && npm install && npm run build")
+        print("    Test:   cd api/ts && npm test")
     if not args.skip_swift:
-        print("  Swift: cd api/swift && swift build")
+        print("  Swift:")
+        print("    Build:  cd api/swift && swift build")
+        print("    Test:   cd api/swift && swift test")
 
 
 if __name__ == "__main__":

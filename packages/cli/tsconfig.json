@@ -2,17 +2,17 @@
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "outDir": "./dist",
-    "rootDir": "./src",
-    "tsBuildInfoFile": "./.tsbuildinfo"
+    "tsBuildInfoFile": "./.tsbuildinfo",
+    "rootDir": "../../",
+    "baseUrl": "."
   },
   "include": [
-    "src/**/*"
+    "src/**/*",
+    "../../api/ts/src/**/*",
+    "../../api/ts/generated/**/*"
   ],
   "exclude": [
     "node_modules",
     "dist"
-  ],
-  "references": [
-    { "path": "../api-client" }
   ]
 }

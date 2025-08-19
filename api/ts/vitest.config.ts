@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { resolve } from 'path';
 
 export default defineConfig({
   test: {
@@ -9,6 +10,12 @@ export default defineConfig({
     testTimeout: 60000, // 60 seconds timeout for streaming tests
   },
   resolve: {
-    extensions: ['.ts', '.js'],
+    extensions: ['.ts', '.tsx', '.js', '.jsx', '.json'],
+    alias: {
+      '@': resolve(__dirname, './src'),
+    },
+  },
+  esbuild: {
+    target: 'es2022',
   },
 });

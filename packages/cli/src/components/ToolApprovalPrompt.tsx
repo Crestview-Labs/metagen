@@ -1,9 +1,8 @@
 import React, { useState } from 'react';
 import { Box, Text } from 'ink';
-import { ApprovalRequestMessage } from '@metagen/api-client';
 
 interface ToolApprovalPromptProps {
-  approval: ApprovalRequestMessage;
+  approval: any; // The raw SSE message from the server
   onDecision: (approved: boolean, feedback?: string) => void;
   isResponding: boolean;
 }
@@ -16,11 +15,18 @@ export const ToolApprovalPrompt: React.FC<ToolApprovalPromptProps> = ({
   const [feedback, setFeedback] = useState('');
   const [showingFeedback, setShowingFeedback] = useState(false);
 
+  if (!approval.tool_name) {
+    return null;
+  }
+
   const formatToolCall = () => {
-    const args = Object.entries(approval.tool_args)
-      .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
-      .join(', ');
-    return `${approval.tool_name}(${args})`;
+    if (approval.tool_args && Object.keys(approval.tool_args).length > 0) {
+      const args = Object.entries(approval.tool_args)
+        .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+        .join(', ');
+      return `${approval.tool_name}(${args})`;
+    }
+    return approval.tool_name;
   };
 
   const handleApprove = () => {
@@ -40,29 +46,28 @@ export const ToolApprovalPrompt: React.FC<ToolApprovalPromptProps> = ({
       <Text bold color="yellow">🔐 Tool Approval Required</Text>
       <Box marginTop={1}>
         <Text>Agent: </Text>
-        <Text color="cyan">{approval.agent_id}</Text>
+        <Text color="cyan">{approval.agent_id || 'METAGEN'}</Text>
       </Box>
       <Box>
         <Text>Tool: </Text>
         <Text color="magenta">{formatToolCall()}</Text>
       </Box>
-      {/* ApprovalRequestMessage doesn't have description or risk_level fields */}
       
-      <Box marginTop={1} flexDirection="column">
-        {!showingFeedback ? (
-          <Box>
-            <Text bold>[Y]es, approve  [N]o, reject  [D]etails</Text>
-            {isResponding && <Text color="gray"> (waiting for agent...)</Text>}
-          </Box>
-        ) : (
-          <Box flexDirection="column">
-            <Text>Rejection reason (optional, press Enter to skip):</Text>
-            <Box>
-              <Text>{'> '}{feedback}</Text>
-            </Box>
-          </Box>
-        )}
+      <Box marginTop={1}>
+        <Text dimColor>Press Y to approve, N to reject, or type feedback and press Enter</Text>
       </Box>
+      
+      {showingFeedback && (
+        <Box marginTop={1}>
+          <Text color="red">Please provide feedback for rejection (or press Y to approve)</Text>
+        </Box>
+      )}
+      
+      {isResponding && (
+        <Box marginTop={1}>
+          <Text dimColor italic>Waiting for response...</Text>
+        </Box>
+      )}
     </Box>
   );
 };
