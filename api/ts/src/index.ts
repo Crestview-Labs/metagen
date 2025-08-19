@@ -1,7 +1,9 @@
-// Auto-generated API client exports - DO NOT EDIT
+// Metagen API Client v2025.08.19.152833
+export * from '../generated/index.js';
+export { MetagenStreamingClient, parseSSEStream, VERSION } from './streaming.js';
+export type { StreamOptions, SSEMessage } from './streaming.js';
+export { API_VERSION } from './version.js';
 
-export { MetagenAPI, api } from './api.js';
-export * from './types.js';
-export * from './errors.js';
-export * from './streaming.js';
-export { API_VERSION, BUILD_VERSION, RELEASE_DATE } from './version.js';
+// Default export
+import { MetagenStreamingClient } from './streaming.js';
+export default MetagenStreamingClient;

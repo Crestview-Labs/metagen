@@ -11,6 +11,10 @@ from common.messages import ApprovalDecision, ApprovalResponseMessage, Message, 
 class ChatRequest(BaseModel):
     """Request to send a message to the agent."""
 
+    # TODO: Remove ApprovalResponseMessage from the Union type.
+    # ApprovalResponseMessage should ONLY go through /api/chat/approval-response endpoint.
+    # When sent through /chat/stream, it doesn't work correctly (gets routed as regular message).
+    # Keeping for backward compatibility but should be removed in next major version.
     message: Union[str, UserMessage, ApprovalResponseMessage] = Field(
         description="Message to send to the agent - can be a string or a Message object"
     )

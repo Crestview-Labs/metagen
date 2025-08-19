@@ -1,11 +1,11 @@
-// swift-tools-version:5.7
+// swift-tools-version:5.9
 import PackageDescription
 
 let package = Package(
     name: "MetagenAPI",
     platforms: [
-        .macOS(.v12),
-        .iOS(.v15)
+        .macOS(.v13),
+        .iOS(.v16)
     ],
     products: [
         .library(
@@ -13,12 +13,22 @@ let package = Package(
             targets: ["MetagenAPI"]
         )
     ],
-    dependencies: [],
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-openapi-generator", from: "1.0.0"),
+        .package(url: "https://github.com/apple/swift-openapi-runtime", from: "1.0.0"),
+        .package(url: "https://github.com/apple/swift-openapi-urlsession", from: "1.0.0"),
+    ],
     targets: [
         .target(
             name: "MetagenAPI",
-            dependencies: [],
-            path: "Sources/MetagenAPI"
+            dependencies: [
+                .product(name: "OpenAPIRuntime", package: "swift-openapi-runtime"),
+                .product(name: "OpenAPIURLSession", package: "swift-openapi-urlsession"),
+            ],
+            path: "Sources/MetagenAPI",
+            plugins: [
+                .plugin(name: "OpenAPIGenerator", package: "swift-openapi-generator")
+            ]
         ),
         .testTarget(
             name: "MetagenAPITests",

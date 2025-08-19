@@ -1,0 +1,1174 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Metagen Backend API",
+    "description": "HTTP API for Metagen superintelligent personal agent",
+    "version": "2025.08.19.152833"
+  },
+  "paths": {
+    "/api/chat/approval-response": {
+      "post": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Handle Approval Response",
+        "description": "Handle tool approval response.",
+        "operationId": "handle_approval_response_api_chat_approval_response_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalResponseMessage"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/chat/stream": {
+      "post": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Chat Stream",
+        "description": "Stream chat responses as they are generated.",
+        "operationId": "chat_stream_api_chat_stream_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/status": {
+      "get": {
+        "tags": [
+          "authentication"
+        ],
+        "summary": "Get Auth Status",
+        "description": "Get current authentication status.",
+        "operationId": "get_auth_status_api_auth_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "tags": [
+          "authentication"
+        ],
+        "summary": "Login",
+        "description": "Initiate Google OAuth login flow.",
+        "operationId": "login_api_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthLoginRequest",
+                "default": {
+                  "force": false
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "tags": [
+          "authentication"
+        ],
+        "summary": "Logout",
+        "description": "Logout and revoke authentication.",
+        "operationId": "logout_api_auth_logout_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tools": {
+      "get": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Get Tools",
+        "description": "Get list of available tools.",
+        "operationId": "get_tools_api_tools_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tools/google": {
+      "get": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "Get Google Tools",
+        "description": "Get list of Google-specific tools.",
+        "operationId": "get_google_tools_api_tools_google_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get Google Tools Api Tools Google Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/info": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Get System Info",
+        "description": "Get system information.",
+        "operationId": "get_system_info_api_system_info_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/health": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Health Check",
+        "description": "Detailed health check.",
+        "operationId": "health_check_api_system_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Health Check Api System Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/memory/clear": {
+      "post": {
+        "tags": [
+          "memory",
+          "memory"
+        ],
+        "summary": "Clear History",
+        "description": "Clear all conversation history and telemetry data from the database.",
+        "operationId": "clear_history_api_memory_clear_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Clear History Api Memory Clear Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/telemetry/traces": {
+      "get": {
+        "tags": [
+          "telemetry",
+          "telemetry"
+        ],
+        "summary": "Get Recent Traces",
+        "description": "Get recent trace IDs.",
+        "operationId": "get_recent_traces_api_telemetry_traces_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Response Get Recent Traces Api Telemetry Traces Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/telemetry/traces/{trace_id}": {
+      "get": {
+        "tags": [
+          "telemetry",
+          "telemetry"
+        ],
+        "summary": "Get Trace",
+        "description": "Get all spans for a trace.",
+        "operationId": "get_trace_api_telemetry_traces__trace_id__get",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Trace Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Trace Api Telemetry Traces  Trace Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/telemetry/traces/{trace_id}/analysis": {
+      "get": {
+        "tags": [
+          "telemetry",
+          "telemetry"
+        ],
+        "summary": "Analyze Trace",
+        "description": "Analyze a trace for performance issues.",
+        "operationId": "analyze_trace_api_telemetry_traces__trace_id__analysis_get",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Trace Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Analyze Trace Api Telemetry Traces  Trace Id  Analysis Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/telemetry/debug/current": {
+      "get": {
+        "tags": [
+          "telemetry",
+          "telemetry"
+        ],
+        "summary": "Get Current Trace",
+        "description": "Get the current active trace (useful for debugging stuck requests).",
+        "operationId": "get_current_trace_api_telemetry_debug_current_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get Current Trace Api Telemetry Debug Current Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/telemetry/memory/traces": {
+      "get": {
+        "tags": [
+          "telemetry",
+          "telemetry"
+        ],
+        "summary": "Get Memory Traces",
+        "description": "Get recent traces from in-memory storage.",
+        "operationId": "get_memory_traces_api_telemetry_memory_traces_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Response Get Memory Traces Api Telemetry Memory Traces Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/telemetry/memory/traces/{trace_id}": {
+      "get": {
+        "tags": [
+          "telemetry",
+          "telemetry"
+        ],
+        "summary": "Get Memory Trace",
+        "description": "Get trace from in-memory storage.",
+        "operationId": "get_memory_trace_api_telemetry_memory_traces__trace_id__get",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Trace Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Memory Trace Api Telemetry Memory Traces  Trace Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/telemetry/traces/{trace_id}/insights": {
+      "get": {
+        "tags": [
+          "telemetry",
+          "telemetry"
+        ],
+        "summary": "Get Trace Insights",
+        "description": "Get intelligent analysis and insights for a trace.",
+        "operationId": "get_trace_insights_api_telemetry_traces__trace_id__insights_get",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Trace Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Trace Insights Api Telemetry Traces  Trace Id  Insights Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/telemetry/traces/{trace_id}/report": {
+      "get": {
+        "tags": [
+          "telemetry",
+          "telemetry"
+        ],
+        "summary": "Get Trace Report",
+        "description": "Get a formatted markdown report for a trace.",
+        "operationId": "get_trace_report_api_telemetry_traces__trace_id__report_get",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Trace Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Get Trace Report Api Telemetry Traces  Trace Id  Report Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/telemetry/latest/insights": {
+      "get": {
+        "tags": [
+          "telemetry",
+          "telemetry"
+        ],
+        "summary": "Get Latest Trace Insights",
+        "description": "Get insights for the most recent trace.",
+        "operationId": "get_latest_trace_insights_api_telemetry_latest_insights_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get Latest Trace Insights Api Telemetry Latest Insights Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/telemetry/latest/report": {
+      "get": {
+        "tags": [
+          "telemetry",
+          "telemetry"
+        ],
+        "summary": "Get Latest Trace Report",
+        "description": "Get a formatted report for the most recent trace.",
+        "operationId": "get_latest_trace_report_api_telemetry_latest_report_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Get Latest Trace Report Api Telemetry Latest Report Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/": {
+      "get": {
+        "summary": "Root",
+        "description": "Root endpoint.",
+        "operationId": "root__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Root  Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "description": "Health check endpoint with detailed status.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ApprovalDecision": {
+        "type": "string",
+        "enum": [
+          "approved",
+          "rejected"
+        ],
+        "title": "ApprovalDecision",
+        "description": "Tool approval decisions."
+      },
+      "ApprovalResponse": {
+        "properties": {
+          "tool_id": {
+            "type": "string",
+            "title": "Tool Id",
+            "description": "ID of the tool that was approved/rejected"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/ApprovalDecision",
+            "description": "The approval decision that was processed"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message",
+            "description": "Optional status message",
+            "default": "Approval processed successfully"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tool_id",
+          "decision"
+        ],
+        "title": "ApprovalResponse",
+        "description": "Response from the approval endpoint."
+      },
+      "ApprovalResponseMessage": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/MessageType",
+            "default": "approval_response"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id",
+            "default": "METAGEN"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "tool_id": {
+            "type": "string",
+            "title": "Tool Id"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/ApprovalDecision"
+          },
+          "feedback": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feedback"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "tool_id",
+          "decision"
+        ],
+        "title": "ApprovalResponseMessage",
+        "description": "User responds to approval request."
+      },
+      "AuthLoginRequest": {
+        "properties": {
+          "force": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Force",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "AuthLoginRequest",
+        "description": "Authentication login request."
+      },
+      "AuthResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "auth_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auth Url"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AuthStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "AuthResponse",
+        "description": "Authentication operation response."
+      },
+      "AuthStatus": {
+        "properties": {
+          "authenticated": {
+            "type": "boolean",
+            "title": "Authenticated"
+          },
+          "user_info": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Info"
+          },
+          "services": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Services",
+            "default": []
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          }
+        },
+        "type": "object",
+        "required": [
+          "authenticated"
+        ],
+        "title": "AuthStatus",
+        "description": "Authentication status response."
+      },
+      "ChatRequest": {
+        "properties": {
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/UserMessage"
+              },
+              {
+                "$ref": "#/components/schemas/ApprovalResponseMessage"
+              }
+            ],
+            "title": "Message",
+            "description": "Message to send to the agent - can be a string or a Message object"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Session identifier for request routing"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message",
+          "session_id"
+        ],
+        "title": "ChatRequest",
+        "description": "Request to send a message to the agent."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "MessageType": {
+        "type": "string",
+        "enum": [
+          "user",
+          "agent",
+          "system",
+          "thinking",
+          "tool_call",
+          "approval_request",
+          "approval_response",
+          "tool_started",
+          "tool_result",
+          "tool_error",
+          "usage",
+          "error"
+        ],
+        "title": "MessageType",
+        "description": "Types of messages in the system."
+      },
+      "SystemInfo": {
+        "properties": {
+          "agent_name": {
+            "type": "string",
+            "title": "Agent Name"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ToolInfo"
+            },
+            "type": "array",
+            "title": "Tools"
+          },
+          "tool_count": {
+            "type": "integer",
+            "title": "Tool Count"
+          },
+          "memory_path": {
+            "type": "string",
+            "title": "Memory Path"
+          },
+          "initialized": {
+            "type": "boolean",
+            "title": "Initialized"
+          }
+        },
+        "type": "object",
+        "required": [
+          "agent_name",
+          "model",
+          "tools",
+          "tool_count",
+          "memory_path",
+          "initialized"
+        ],
+        "title": "SystemInfo",
+        "description": "System information response."
+      },
+      "ToolInfo": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "input_schema": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Input Schema"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "description",
+          "input_schema"
+        ],
+        "title": "ToolInfo",
+        "description": "Information about an available tool."
+      },
+      "ToolsResponse": {
+        "properties": {
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ToolInfo"
+            },
+            "type": "array",
+            "title": "Tools"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tools",
+          "count"
+        ],
+        "title": "ToolsResponse",
+        "description": "Tools listing response."
+      },
+      "UserMessage": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/MessageType",
+            "default": "user"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id",
+            "default": "METAGEN"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "content"
+        ],
+        "title": "UserMessage",
+        "description": "User chat message."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

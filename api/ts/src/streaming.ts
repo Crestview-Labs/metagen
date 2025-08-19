@@ -1,51 +1,22 @@
-// Auto-generated SSE/streaming utilities - DO NOT EDIT
+/**
+ * SSE Streaming wrapper for Metagen API v2025.08.19.152833
+ * Generated: 2025-08-19T15:28:35.118767+00:00
+ */
 
-import { SSEMessage } from './types.js';
-import { StreamError } from './errors.js';
+import { OpenAPI } from '../generated/index.js';
+import type { ChatRequest } from '../generated/index.js';
 
 export interface StreamOptions {
   signal?: AbortSignal;
-  onMessage?: (message: SSEMessage) => void;
   onError?: (error: Error) => void;
-  onComplete?: () => void;
+  retryDelay?: number;
 }
 
-export class SSEParser {
-  private buffer = '';
-
-  parse(chunk: string): SSEMessage[] {
-    this.buffer += chunk;
-    const messages: SSEMessage[] = [];
-    const lines = this.buffer.split('\n');
-    
-    let i = 0;
-    while (i < lines.length - 1) {
-      const line = lines[i];
-      if (line.startsWith('data: ')) {
-        const data = line.slice(6);
-        try {
-          const message = JSON.parse(data) as SSEMessage;
-          messages.push(message);
-        } catch (e) {
-          console.error('Failed to parse SSE message:', data, e);
-        }
-        // Skip the empty line after data
-        if (lines[i + 1] === '') {
-          i++;
-        }
-      }
-      i++;
-    }
-    
-    // Keep the last incomplete line in buffer
-    this.buffer = lines[lines.length - 1];
-    
-    return messages;
-  }
-  
-  reset() {
-    this.buffer = '';
-  }
+export interface SSEMessage {
+  id?: string;
+  event?: string;
+  data: string;
+  retry?: number;
 }
 
 export async function* parseSSEStream(
@@ -53,47 +24,84 @@ export async function* parseSSEStream(
   options?: StreamOptions
 ): AsyncGenerator<SSEMessage, void, unknown> {
   if (!response.body) {
-    throw new StreamError('Response body is null');
+    throw new Error('Response body is empty');
   }
-  
+
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  const parser = new SSEParser();
-  
+  let buffer = '';
+
   try {
     while (true) {
       const { done, value } = await reader.read();
-      
-      if (done) {
-        options?.onComplete?.();
-        break;
-      }
-      
-      const chunk = decoder.decode(value, { stream: true });
-      const messages = parser.parse(chunk);
-      
-      for (const message of messages) {
-        if (message.type === 'error') {
-          const error = new StreamError(message.error || 'Unknown error');
-          options?.onError?.(error);
-          throw error;
-        }
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.trim() === '') continue;
         
-        if (message.type === 'complete') {
-          options?.onComplete?.();
-          return;
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') {
+            return;
+          }
+          
+          yield {
+            data,
+            event: 'message'
+          };
         }
-        
-        options?.onMessage?.(message);
-        yield message;
       }
     }
   } catch (error) {
-    if (error instanceof Error) {
-      options?.onError?.(error);
+    if (options?.onError) {
+      options.onError(error as Error);
+    } else {
+      throw error;
     }
-    throw error;
   } finally {
     reader.releaseLock();
   }
 }
+
+export class MetagenStreamingClient {
+  private baseURL: string;
+  
+  constructor(baseURL: string = 'http://localhost:8080') {
+    this.baseURL = baseURL;
+    OpenAPI.BASE = baseURL;
+  }
+  
+  /**
+   * Stream chat responses using Server-Sent Events
+   */
+  async *chatStream(request: ChatRequest): AsyncGenerator<any, void, unknown> {
+    const response = await fetch(`${this.baseURL}/api/chat/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
+      },
+      body: JSON.stringify(request)
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    for await (const sseMessage of parseSSEStream(response)) {
+      try {
+        const data = JSON.parse(sseMessage.data);
+        yield data;
+        if (data.type === 'complete') return;
+      } catch (e) {
+        console.warn('Failed to parse SSE data:', sseMessage.data);
+      }
+    }
+  }
+}
+
+export const VERSION = '2025.08.19.152833';

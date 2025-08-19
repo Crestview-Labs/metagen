@@ -1,9 +1,7 @@
-// Auto-generated from version.json - DO NOT EDIT
-
-import Foundation
+// Auto-generated version info - DO NOT EDIT
+// Generated: 2025-08-19T15:28:35.210182+00:00
 
 public struct APIVersion {
-    public static let version = "0.1.0"
-    public static let build = "2025.01.08.001"
-    public static let releaseDate = "2025-01-08"
+    public static let version = "2025.08.19.152833"
+    public static let generatedAt = "2025-08-19T15:28:35.210190+00:00"
 }

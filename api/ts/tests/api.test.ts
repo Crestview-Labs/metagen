@@ -1,21 +1,21 @@
 // Basic API client tests
 import { describe, it, expect } from 'vitest';
-import { MetagenAPI } from '../src/api.js';
-import { API_VERSION, BUILD_VERSION } from '../src/version.js';
+import { MetagenStreamingClient } from '../src/streaming.js';
+import { API_VERSION } from '../src/version.js';
 
-describe('MetagenAPI', () => {
+describe('MetagenStreamingClient', () => {
   it('should create an instance with default URL', () => {
-    const api = new MetagenAPI();
-    expect(api).toBeDefined();
+    const client = new MetagenStreamingClient();
+    expect(client).toBeDefined();
   });
 
   it('should create an instance with custom URL', () => {
-    const api = new MetagenAPI('http://localhost:3000');
-    expect(api).toBeDefined();
+    const client = new MetagenStreamingClient('http://localhost:3000');
+    expect(client).toBeDefined();
   });
 
-  it('should export correct version', () => {
-    expect(API_VERSION).toBe('0.1.0');
-    expect(BUILD_VERSION).toBe('2025.01.08.001');
+  it('should export version', () => {
+    expect(API_VERSION).toBeDefined();
+    expect(typeof API_VERSION).toBe('string');
   });
 });

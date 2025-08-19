@@ -1,24 +1,19 @@
 {
   "name": "@metagen/api-client",
-  "version": "0.1.0",
+  "version": "2025.08.19.152833",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
-  },
   "scripts": {
     "build": "tsc",
     "test": "vitest",
-    "type-check": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "type-check": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/uuid": "^10.0.0",
     "typescript": "^5.0.0",
+    "uuid": "^11.1.0",
     "vitest": "^1.0.0"
   }
 }

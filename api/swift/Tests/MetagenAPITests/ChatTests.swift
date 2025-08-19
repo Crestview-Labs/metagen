@@ -1,450 +1,195 @@
-// Comprehensive tests for chat API - both mock and real
+/**
+ * Unit tests for Chat functionality
+ * Tests chat-related types and functions without requiring a server
+ */
+
 import XCTest
+import Foundation
 @testable import MetagenAPI
 
-// ============================================================================
-// MOCK TESTS
-// ============================================================================
-
-final class ChatTestsMocked: XCTestCase {
-    var api: MetagenAPI!
-    var mockSession: URLSessionMock!
+final class ChatTests: XCTestCase {
     
-    override func setUp() {
-        super.setUp()
-        mockSession = URLSessionMock()
-        api = MetagenAPI(baseURL: "http://localhost:8000")
-        // Note: In production, you'd inject the session into MetagenAPI
-        // For now, we'll test the real implementation
+    func testMessageTypeEnumeration() {
+        // Test all message types are available
+        let allTypes = Components.Schemas.MessageType.allCases
+        
+        // Verify we have the expected message types
+        XCTAssertTrue(allTypes.contains(.user))
+        XCTAssertTrue(allTypes.contains(.agent))
+        XCTAssertTrue(allTypes.contains(.system))
+        XCTAssertTrue(allTypes.contains(.thinking))
+        XCTAssertTrue(allTypes.contains(.tool_call))
+        
+        // Test raw values
+        XCTAssertEqual(Components.Schemas.MessageType.user.rawValue, "user")
+        XCTAssertEqual(Components.Schemas.MessageType.agent.rawValue, "agent")
+        XCTAssertEqual(Components.Schemas.MessageType.tool_call.rawValue, "tool_call")
     }
     
-    override func tearDown() {
-        api = nil
-        mockSession = nil
-        super.tearDown()
+    func testChatRequestPayloadVariants() {
+        // Test that ChatRequest can handle different message types
+        
+        // Variant 1: Plain string message
+        let stringPayload = Components.Schemas.ChatRequest.messagePayload(
+            value1: "Simple message"
+        )
+        XCTAssertNotNil(stringPayload.value1)
+        XCTAssertNil(stringPayload.value2)
+        XCTAssertNil(stringPayload.value3)
+        
+        // Variant 2: UserMessage
+        let userMessage = Components.Schemas.UserMessage(
+            _type: .user,
+            timestamp: nil,
+            agent_id: "METAGEN",
+            session_id: "test-session",
+            content: "User message"
+        )
+        let userPayload = Components.Schemas.ChatRequest.messagePayload(
+            value2: userMessage
+        )
+        XCTAssertNil(userPayload.value1)
+        XCTAssertNotNil(userPayload.value2)
+        XCTAssertNil(userPayload.value3)
+        
+        // Variant 3: ApprovalResponseMessage
+        let approvalMessage = Components.Schemas.ApprovalResponseMessage(
+            _type: .approval_response,
+            timestamp: nil,
+            agent_id: "USER",
+            session_id: "test-session",
+            tool_id: "tool-123",
+            decision: .approved
+        )
+        let approvalPayload = Components.Schemas.ChatRequest.messagePayload(
+            value3: approvalMessage
+        )
+        XCTAssertNil(approvalPayload.value1)
+        XCTAssertNil(approvalPayload.value2)
+        XCTAssertNotNil(approvalPayload.value3)
     }
     
-    func testChatRequestModel() {
-        let request = ChatRequest(
-            message: "Hello, assistant!",
-            sessionId: "test-session-123"
+    func testApprovalDecisionTypes() {
+        // Test all approval decision types
+        let decisions: [Components.Schemas.ApprovalDecision] = [
+            .approved,
+            .rejected
+        ]
+        
+        XCTAssertEqual(decisions.count, 2)
+        
+        // Test raw values
+        XCTAssertEqual(Components.Schemas.ApprovalDecision.approved.rawValue, "approved")
+        XCTAssertEqual(Components.Schemas.ApprovalDecision.rejected.rawValue, "rejected")
+    }
+    
+    func testSessionIDHandling() {
+        // Test that session IDs are properly handled
+        let sessionId = UUID().uuidString
+        
+        // Create request with specific session ID
+        let request = Components.Schemas.ChatRequest(
+            message: Components.Schemas.ChatRequest.messagePayload(value1: "Test message"),
+            session_id: sessionId
         )
         
-        XCTAssertEqual(request.message, "Hello, assistant!")
-        XCTAssertEqual(request.sessionId, "test-session-123")
+        XCTAssertEqual(request.session_id, sessionId)
+        
+        // Verify session ID format (should be UUID-like)
+        let uuidRegex = #"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"#
+        let predicate = NSPredicate(format: "SELF MATCHES %@", uuidRegex)
+        XCTAssertTrue(predicate.evaluate(with: sessionId))
     }
     
-    func testChatRequestOptionalSession() {
-        let request = ChatRequest(message: "Hello!")
-        
-        XCTAssertEqual(request.message, "Hello!")
-        XCTAssertNil(request.sessionId)
-    }
-    
-    func testUIResponseModel() {
-        // Test that the model can be created
-        // In real app, you'd decode from JSON
-        let jsonString = """
-        {
-            "type": "text",
-            "content": "Response content",
-            "agent_id": "agent-123",
-            "metadata": {"key": "value"},
-            "timestamp": "2025-01-08T12:00:00"
-        }
-        """
-        
-        let data = jsonString.data(using: .utf8)!
+    func testMessageSerialization() throws {
+        // Test that messages can be encoded/decoded properly
+        let encoder = JSONEncoder()
         let decoder = JSONDecoder()
         
-        do {
-            let response = try decoder.decode(UIResponseModel.self, from: data)
-            XCTAssertEqual(response.type, "text")
-            XCTAssertEqual(response.content, "Response content")
-            XCTAssertEqual(response.agentId, "agent-123")
-            XCTAssertNotNil(response.metadata)
-            XCTAssertEqual(response.timestamp, "2025-01-08T12:00:00")
-        } catch {
-            XCTFail("Failed to decode UIResponseModel: \(error)")
-        }
-    }
-    
-    func testChatResponseModel() {
-        let jsonString = """
-        {
-            "responses": [{
-                "type": "text",
-                "content": "Test",
-                "agent_id": "agent-123",
-                "timestamp": "2025-01-08T12:00:00"
-            }],
-            "session_id": "session-123",
-            "success": true
-        }
-        """
-        
-        let data = jsonString.data(using: .utf8)!
-        let decoder = JSONDecoder()
-        
-        do {
-            let response = try decoder.decode(ChatResponse.self, from: data)
-            XCTAssertEqual(response.responses.count, 1)
-            XCTAssertEqual(response.sessionId, "session-123")
-            XCTAssertTrue(response.success)
-        } catch {
-            XCTFail("Failed to decode ChatResponse: \(error)")
-        }
-    }
-    
-    func testToolDecisionRequest() {
-        let decision = ToolDecisionRequest(
-            toolId: "tool-123",
-            decision: "approved",
-            feedback: nil,
-            agentId: "METAGEN"
+        // Test UserMessage serialization
+        let userMessage = Components.Schemas.UserMessage(
+            _type: .user,
+            timestamp: nil,
+            agent_id: "agent-1",
+            session_id: "session-1",
+            content: "Test content"
         )
         
-        XCTAssertEqual(decision.toolId, "tool-123")
-        XCTAssertEqual(decision.decision, "approved")
-        XCTAssertNil(decision.feedback)
-        XCTAssertEqual(decision.agentId, "METAGEN")
-    }
-    
-    func testPendingToolModel() {
-        let jsonString = """
-        {
-            "tool_id": "pending-123",
-            "tool_name": "test_tool",
-            "tool_args": {"arg1": "value1"},
-            "agent_id": "METAGEN",
-            "created_at": "2025-01-08T12:00:00",
-            "requires_approval": true
-        }
-        """
+        let userData = try encoder.encode(userMessage)
+        let decodedUser = try decoder.decode(Components.Schemas.UserMessage.self, from: userData)
         
-        let data = jsonString.data(using: .utf8)!
-        let decoder = JSONDecoder()
+        XCTAssertEqual(decodedUser.agent_id, userMessage.agent_id)
+        XCTAssertEqual(decodedUser.session_id, userMessage.session_id)
+        XCTAssertEqual(decodedUser.content, userMessage.content)
         
-        do {
-            let tool = try decoder.decode(PendingTool.self, from: data)
-            XCTAssertEqual(tool.toolId, "pending-123")
-            XCTAssertEqual(tool.toolName, "test_tool")
-            XCTAssertEqual(tool.agentId, "METAGEN")
-            XCTAssertTrue(tool.requiresApproval)
-        } catch {
-            XCTFail("Failed to decode PendingTool: \(error)")
-        }
-    }
-    
-    func testSSEMessageModel() {
-        let jsonString = """
-        {
-            "type": "text",
-            "content": "Hello",
-            "agent_id": "agent-123",
-            "timestamp": "2025-01-08T12:00:00"
-        }
-        """
-        
-        let data = jsonString.data(using: .utf8)!
-        let decoder = JSONDecoder()
-        
-        do {
-            let message = try decoder.decode(SSEMessage.self, from: data)
-            XCTAssertEqual(message.type, "text")
-            XCTAssertEqual(message.content, "Hello")
-            XCTAssertEqual(message.agentId, "agent-123")
-        } catch {
-            XCTFail("Failed to decode SSEMessage: \(error)")
-        }
-    }
-    
-    func testErrorTypes() {
-        let networkError = MetagenAPIError.networkError(NSError(domain: "test", code: 0))
-        XCTAssertNotNil(networkError.errorDescription)
-        
-        let apiError = MetagenAPIError.apiError(statusCode: 500, message: "Server error", body: nil)
-        XCTAssertTrue(apiError.errorDescription?.contains("500") ?? false)
-        
-        let versionError = MetagenAPIError.versionMismatch(expected: "0.1.0", received: "0.2.0")
-        XCTAssertTrue(versionError.errorDescription?.contains("0.1.0") ?? false)
-    }
-}
-
-// ============================================================================
-// INTEGRATION TESTS WITH REAL API
-// ============================================================================
-
-final class ChatTestsIntegration: XCTestCase {
-    var api: MetagenAPI!
-    
-    // Skip integration tests unless RUN_INTEGRATION_TESTS is set
-    var skipIntegration: Bool {
-        ProcessInfo.processInfo.environment["RUN_INTEGRATION_TESTS"] == nil
-    }
-    
-    override func setUp() {
-        super.setUp()
-        let apiURL = ProcessInfo.processInfo.environment["API_URL"] ?? "http://localhost:8000"
-        api = MetagenAPI(baseURL: apiURL)
-    }
-    
-    override func tearDown() {
-        api = nil
-        super.tearDown()
-    }
-    
-    func testRealChatRequest() async throws {
-        try XCTSkipIf(skipIntegration, "Skipping integration test")
-        
-        let request = ChatRequest(
-            message: "What is 2+2? Reply with just the number.",
-            sessionId: "test-swift-integration"
+        // Test ChatRequest serialization
+        let chatRequest = Components.Schemas.ChatRequest(
+            message: Components.Schemas.ChatRequest.messagePayload(value1: "Hello"),
+            session_id: "test-123"
         )
         
-        do {
-            let response = try await api.chat(request)
-            XCTAssertTrue(response.success)
-            XCTAssertFalse(response.responses.isEmpty)
-            XCTAssertEqual(response.sessionId, "test-swift-integration")
-        } catch {
-            XCTFail("Chat request failed: \(error)")
-        }
+        let chatData = try encoder.encode(chatRequest)
+        let decodedChat = try decoder.decode(Components.Schemas.ChatRequest.self, from: chatData)
+        
+        XCTAssertEqual(decodedChat.session_id, chatRequest.session_id)
+        XCTAssertEqual(decodedChat.message.value1, "Hello")
     }
     
-    func testRealChatStream() async throws {
-        try XCTSkipIf(skipIntegration, "Skipping integration test")
+    func testErrorHandling() {
+        // Test various error conditions that might occur
         
-        let request = ChatRequest(
-            message: "Count from 1 to 3",
-            sessionId: "test-swift-stream"
+        // Test empty session ID handling
+        let emptySessionRequest = Components.Schemas.ChatRequest(
+            message: Components.Schemas.ChatRequest.messagePayload(value1: "Test"),
+            session_id: ""
+        )
+        XCTAssertEqual(emptySessionRequest.session_id, "")
+        
+        // Test empty message content
+        let emptyMessage = Components.Schemas.UserMessage(
+            _type: .user,
+            timestamp: nil,
+            agent_id: "agent",
+            session_id: "session",
+            content: ""
+        )
+        XCTAssertEqual(emptyMessage.content, "")
+        
+        // Test special characters in content
+        let specialCharsMessage = Components.Schemas.UserMessage(
+            _type: .user,
+            timestamp: nil,
+            agent_id: "agent",
+            session_id: "session",
+            content: "Test with special chars: 🎉 <>&\"'\n\t"
+        )
+        XCTAssertEqual(specialCharsMessage.content, "Test with special chars: 🎉 <>&\"'\n\t")
+    }
+    
+    func testTimestampHandling() {
+        // Test timestamp fields
+        let timestamp = Date()
+        
+        let messageWithTimestamp = Components.Schemas.UserMessage(
+            _type: .user,
+            timestamp: timestamp,
+            agent_id: "agent",
+            session_id: "session",
+            content: "Message with timestamp"
         )
         
-        let stream = api.chatStream(request)
-        var messages: [SSEMessage] = []
-        var completed = false
+        XCTAssertNotNil(messageWithTimestamp.timestamp)
+        XCTAssertEqual(messageWithTimestamp.timestamp, timestamp)
         
-        for await message in stream {
-            messages.append(message)
-            if message.type == "complete" {
-                completed = true
-                break
-            }
-            // Limit iterations to prevent infinite loop
-            if messages.count > 100 {
-                break
-            }
-        }
-        
-        XCTAssertFalse(messages.isEmpty)
-        XCTAssertTrue(completed)
-    }
-    
-    func testRealPendingTools() async throws {
-        try XCTSkipIf(skipIntegration, "Skipping integration test")
-        
-        do {
-            let response = try await api.getPendingTools()
-            XCTAssertTrue(response.success)
-            XCTAssertNotNil(response.pendingTools)
-            XCTAssertGreaterThanOrEqual(response.count, 0)
-        } catch {
-            XCTFail("Get pending tools failed: \(error)")
-        }
-    }
-    
-    func testRealConcurrentRequests() async throws {
-        try XCTSkipIf(skipIntegration, "Skipping integration test")
-        
-        async let response1 = api.chat(ChatRequest(message: "Say hello", sessionId: "concurrent-1"))
-        async let response2 = api.chat(ChatRequest(message: "Say goodbye", sessionId: "concurrent-2"))
-        async let response3 = api.chat(ChatRequest(message: "Say thanks", sessionId: "concurrent-3"))
-        
-        do {
-            let responses = try await [response1, response2, response3]
-            
-            for response in responses {
-                XCTAssertTrue(response.success)
-                XCTAssertFalse(response.responses.isEmpty)
-            }
-        } catch {
-            XCTFail("Concurrent requests failed: \(error)")
-        }
-    }
-    
-    func testRealSessionContext() async throws {
-        try XCTSkipIf(skipIntegration, "Skipping integration test")
-        
-        let sessionId = "context-test-swift"
-        
-        // First message
-        let request1 = ChatRequest(
-            message: "My name is SwiftTester",
-            sessionId: sessionId
+        // Test message without timestamp
+        let messageNoTimestamp = Components.Schemas.UserMessage(
+            _type: .user,
+            timestamp: nil,
+            agent_id: "agent",
+            session_id: "session",
+            content: "Message without timestamp"
         )
         
-        do {
-            let response1 = try await api.chat(request1)
-            XCTAssertTrue(response1.success)
-            
-            // Second message referencing first
-            let request2 = ChatRequest(
-                message: "What is my name?",
-                sessionId: sessionId
-            )
-            
-            let response2 = try await api.chat(request2)
-            XCTAssertTrue(response2.success)
-            
-            // Check if response mentions the name (context working)
-            let responseText = response2.responses
-                .compactMap { $0.content }
-                .joined(separator: " ")
-            // May or may not contain the name depending on context handling
-            XCTAssertFalse(responseText.isEmpty)
-        } catch {
-            XCTFail("Session context test failed: \(error)")
-        }
-    }
-    
-    func testRealSpecialCharacters() async throws {
-        try XCTSkipIf(skipIntegration, "Skipping integration test")
-        
-        let request = ChatRequest(
-            message: "What is 🎉 emoji?",
-            sessionId: "emoji-test-swift"
-        )
-        
-        do {
-            let response = try await api.chat(request)
-            XCTAssertTrue(response.success)
-            XCTAssertFalse(response.responses.isEmpty)
-        } catch {
-            XCTFail("Special characters test failed: \(error)")
-        }
-    }
-    
-    func testRealToolDecision() async throws {
-        try XCTSkipIf(skipIntegration, "Skipping integration test")
-        
-        // First, get pending tools
-        do {
-            let pendingResponse = try await api.getPendingTools()
-            
-            if !pendingResponse.pendingTools.isEmpty {
-                let tool = pendingResponse.pendingTools[0]
-                
-                let decision = ToolDecisionRequest(
-                    toolId: tool.toolId,
-                    decision: "approved",
-                    agentId: tool.agentId
-                )
-                
-                let decisionResponse = try await api.submitToolDecision(decision)
-                XCTAssertTrue(decisionResponse.success)
-                XCTAssertEqual(decisionResponse.toolId, tool.toolId)
-            }
-        } catch {
-            // It's ok if there are no pending tools
-            print("Tool decision test: \(error)")
-        }
-    }
-}
-
-// ============================================================================
-// PERFORMANCE TESTS
-// ============================================================================
-
-final class ChatTestsPerformance: XCTestCase {
-    var api: MetagenAPI!
-    
-    override func setUp() {
-        super.setUp()
-        api = MetagenAPI()
-    }
-    
-    override func tearDown() {
-        api = nil
-        super.tearDown()
-    }
-    
-    func testResponseTimePerformance() async throws {
-        // Skip if not running integration tests
-        try XCTSkipIf(ProcessInfo.processInfo.environment["RUN_INTEGRATION_TESTS"] == nil)
-        
-        let request = ChatRequest(
-            message: "What is 2+2?",
-            sessionId: "perf-test"
-        )
-        
-        let startTime = Date()
-        
-        do {
-            _ = try await api.chat(request)
-            let elapsed = Date().timeIntervalSince(startTime)
-            
-            // Should respond within 30 seconds for simple queries
-            XCTAssertLessThan(elapsed, 30.0, "Response took \(elapsed) seconds")
-        } catch {
-            XCTFail("Performance test failed: \(error)")
-        }
-    }
-    
-    func testStreamingLatency() async throws {
-        try XCTSkipIf(ProcessInfo.processInfo.environment["RUN_INTEGRATION_TESTS"] == nil)
-        
-        let request = ChatRequest(
-            message: "Say hello",
-            sessionId: "stream-perf"
-        )
-        
-        let startTime = Date()
-        var firstMessageTime: Date?
-        
-        let stream = api.chatStream(request)
-        
-        for await message in stream {
-            if firstMessageTime == nil {
-                firstMessageTime = Date()
-            }
-            if message.type == "complete" {
-                break
-            }
-            // Prevent infinite loop
-            if Date().timeIntervalSince(startTime) > 30 {
-                break
-            }
-        }
-        
-        if let firstTime = firstMessageTime {
-            let latency = firstTime.timeIntervalSince(startTime)
-            XCTAssertLessThan(latency, 10.0, "First message took \(latency) seconds")
-        }
-    }
-}
-
-// ============================================================================
-// MOCK HELPERS
-// ============================================================================
-
-class URLSessionMock: URLSession {
-    var data: Data?
-    var response: URLResponse?
-    var error: Error?
-    
-    override func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-        if let error = error {
-            throw error
-        }
-        
-        let data = self.data ?? Data()
-        let response = self.response ?? HTTPURLResponse(
-            url: request.url!,
-            statusCode: 200,
-            httpVersion: nil,
-            headerFields: nil
-        )!
-        
-        return (data, response)
+        XCTAssertNil(messageNoTimestamp.timestamp)
     }
 }

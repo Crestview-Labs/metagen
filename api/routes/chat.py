@@ -70,6 +70,10 @@ async def chat_stream(request: Request, chat_request: ChatRequest) -> StreamingR
             if isinstance(message, UserMessage):
                 msg_preview = message.content[:100]
             elif isinstance(message, ApprovalResponseMessage):
+                # TODO: Remove this case - ApprovalResponseMessage should NEVER come through
+                # /chat/stream. It doesn't work correctly (gets treated as regular message)
+                # and we have a dedicated /api/chat/approval-response endpoint for this.
+                # Keeping for now to avoid breaking changes, but should be removed.
                 msg_preview = f"Approval: {message.decision} for {message.tool_id}"
             else:
                 msg_preview = str(message)[:100]

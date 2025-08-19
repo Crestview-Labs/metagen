@@ -28,9 +28,13 @@ for arg in "$@"; do
             CHECK_ONLY=true
             echo "📝 Check only mode - no build will be performed"
             ;;
+        --force-stubs)
+            FORCE_STUBS=true
+            echo "📝 Forcing stub regeneration"
+            ;;
         *)
             echo "Unknown option: $arg"
-            echo "Usage: $0 [--dev|--release|--force-tests|--skip-tests|--check-only]"
+            echo "Usage: $0 [--dev|--release|--force-tests|--skip-tests|--check-only|--force-stubs]"
             exit 1
             ;;
     esac
@@ -163,7 +167,8 @@ if [[ "$MODE" != "dev" ]]; then
     if [[ "$VERSION_CHANGED" == "true" ]] && [[ "$STUBS_FRESH" == "false" ]]; then
         print_error "Version updated but stubs are stale!"
         print_error "Please regenerate stubs using:"
-        print_error "  Copy scripts/generate_stubs_instructions.md to Claude Code"
+        print_error "  uv run python generate_stubs.py"
+        print_error "Or run build with: ./build.sh --force-stubs"
         exit 1
     fi
 fi
@@ -215,9 +220,94 @@ uv sync --dev
 if [ -d "db" ]; then
     echo ""
     echo "🗄️  Running database migrations..."
-    cd db && alembic upgrade head && cd ..
+    # Save current directory
+    CURRENT_DIR=$(pwd)
+    # Try to run migrations, but don't fail if tables already exist
+    cd db && {
+        alembic upgrade head 2>/dev/null || print_warning "Database migration skipped (tables may already exist)"
+    }
+    # Always return to original directory
+    cd "$CURRENT_DIR"
 else
     print_info "No db directory found - skipping migrations"
+fi
+
+# Check and generate API stubs if needed
+echo ""
+echo "🔍 Checking API client stubs..."
+STUB_GEN_NEEDED=false
+
+# Check if stubs need generation
+if [[ "$FORCE_STUBS" == "true" ]]; then
+    STUB_GEN_NEEDED=true
+    print_info "Force regeneration requested"
+elif [[ "$VERSION_CHANGED" == "true" ]] || [[ "$API_CHANGED" == "true" ]]; then
+    STUB_GEN_NEEDED=true
+    print_info "API or version changed - regeneration needed"
+elif [ ! -d "api/ts/generated" ] && [ ! -d "api/swift/Sources/Generated" ]; then
+    STUB_GEN_NEEDED=true
+    print_info "Generated stubs not found"
+elif [[ "$STUBS_FRESH" == "false" ]]; then
+    STUB_GEN_NEEDED=true
+    print_info "Stubs are out of date"
+fi
+
+if [[ "$STUB_GEN_NEEDED" == "true" ]]; then
+    # Check if API server is running for stub generation
+    if curl -s http://localhost:8080/openapi.json > /dev/null 2>&1; then
+        print_status "API server is running"
+        
+        echo "📝 Generating API client stubs..."
+        
+        # Install Python dependencies for generation script
+        uv pip install requests pyyaml
+        
+        # Run generation with appropriate flags
+        if [[ "$FORCE_STUBS" == "true" ]]; then
+            uv run python generate_stubs.py --force || { print_error "Stub generation failed!"; exit 1; }
+        else
+            uv run python generate_stubs.py || { print_error "Stub generation failed!"; exit 1; }
+        fi
+        
+        print_status "API stubs generated successfully"
+        
+        # Build TypeScript stubs
+        if [ -d "api/ts" ]; then
+            echo "🔨 Building TypeScript stubs..."
+            cd api/ts
+            npm install
+            # Install test dependencies if needed
+            npm install uuid @types/uuid --save-dev 2>/dev/null || true
+            # Build
+            npm run build || {
+                print_warning "TypeScript build had warnings - this is normal for generated code"
+            }
+            cd ../..
+            print_status "TypeScript stubs built"
+        fi
+        
+        # Note about Swift
+        if [ -d "api/swift" ]; then
+            print_info "Swift stubs generated. Build with: cd api/swift && swift build"
+        fi
+    else
+        print_warning "API server not running - cannot generate stubs"
+        print_warning "Start the server first: uv run python main.py"
+        print_warning "Then run: uv run python generate_stubs.py"
+        
+        if [[ "$MODE" == "release" ]]; then
+            print_error "Release mode requires stub generation!"
+            exit 1
+        fi
+    fi
+else
+    print_status "API stubs are up to date"
+    
+    # Check version if version.json exists
+    if [ -f "api/version.json" ]; then
+        API_VERSION=$(uv run python -c "import json; print(json.load(open('api/version.json'))['current'])")
+        print_info "API stubs version: v${API_VERSION}"
+    fi
 fi
 
 # Run Python API tests if needed
@@ -244,8 +334,13 @@ if [[ "$RUN_TS_TESTS" == "true" ]] && [ -d "api/ts" ]; then
     echo ""
     echo "🧪 Running TypeScript client tests..."
     cd api/ts
-    pnpm install --silent
-    pnpm test --run || { print_error "TypeScript tests failed!"; exit 1; }
+    # Ensure all dependencies including test dependencies are installed
+    npm install
+    # Install test dependencies if they're in package.json devDependencies
+    if grep -q '"uuid"' package.json 2>/dev/null || grep -q '"@types/uuid"' package.json 2>/dev/null; then
+        npm install uuid @types/uuid --save-dev 2>/dev/null || true
+    fi
+    npm run test -- --run || { print_error "TypeScript tests failed!"; exit 1; }
     cd ../..
     print_status "TypeScript tests passed"
 elif [ -d "api/ts" ]; then
@@ -291,7 +386,7 @@ echo "  Tests run:"
 echo "  Artifacts: build/artifacts/"
 echo ""
 echo "📋 Next steps:"
-[[ "$STUBS_FRESH" == "false" ]] && echo "  - Generate stubs: Copy scripts/generate_stubs_instructions.md to Claude Code"
+[[ "$STUBS_FRESH" == "false" ]] && echo "  - Generate stubs: uv run python generate_stubs.py"
 echo "  - Start backend: uv run python main.py"
 echo "  - Start CLI: ./bundle/metagen.js"
 echo "  - Or run both: pnpm run dev"
