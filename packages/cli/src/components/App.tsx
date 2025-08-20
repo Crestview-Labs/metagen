@@ -14,6 +14,7 @@ import { useTextBuffer } from './TextBuffer.js';
 import { useMetagenStream } from '../hooks/useMetagenStream.js';
 import { InputPrompt } from './InputPrompt.js';
 import { ToolApprovalPrompt } from './ToolApprovalPrompt.js';
+import { Spinner } from './Spinner.js';
 
 // Simple config interface for our CLI
 interface Config {
@@ -44,7 +45,7 @@ export const App: React.FC = () => {
   const [terminalHeight, setTerminalHeight] = useState(process.stdout.rows || 24);
   
   // Use the streaming hook for chat functionality
-  const { messages, isResponding, sessionId, showToolResults, toggleToolResults, sendMessage, addMessage, handleSlashCommand, pendingApproval, handleToolDecision } = useMetagenStream();
+  const { messages, isResponding, sessionId, showToolResults, toggleToolResults, sendMessage, addMessage, handleSlashCommand, pendingApproval, handleToolDecision, toggleMessageExpanded } = useMetagenStream();
   
   // Authentication state
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
@@ -134,6 +135,23 @@ export const App: React.FC = () => {
       return;
     }
     
+    // Handle expand/collapse for tool results  
+    if (key.ctrl && input === 'e' && !pendingApproval) {
+      // Find the last tool result or tool call message
+      let lastExpandable = -1;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if ((msg.type === 'tool_result' || msg.type === 'tool_call') && msg.metadata) {
+          lastExpandable = i;
+          break;
+        }
+      }
+      if (lastExpandable !== -1) {
+        toggleMessageExpanded(messages[lastExpandable].id);
+      }
+      return;
+    }
+    
     // Handle tool approval keyboard shortcuts
     if (pendingApproval && !isResponding) {
       if (input === 'y' || input === 'Y') {
@@ -174,29 +192,94 @@ export const App: React.FC = () => {
 
       {/* Messages - Simple and stable */}
       <Box flexDirection="column" flexGrow={1} paddingBottom={1}>
-        {messages.map((message) => (
-          <Box key={message.id} marginBottom={1}>
-            {message.type === 'user' ? (
-              <Text color="green" bold>👤 You: {message.content}</Text>
-            ) : message.type === 'agent' ? (
-              <Box marginLeft={2}>
-                <Text color="blue">{message.content}</Text>
+        {messages.map((message) => {
+          // Handle tool calls with collapsible details
+          if (message.type === 'tool_call' && message.metadata) {
+            return (
+              <Box key={message.id} marginBottom={1} flexDirection="column">
+                <Text color="cyan">
+                  → {message.content}
+                  {message.metadata.args && Object.keys(message.metadata.args).length > 0 && (
+                    <Text dimColor> {message.expanded ? '▼' : '▶'}</Text>
+                  )}
+                </Text>
+                {message.expanded && message.metadata.argsPreview && (
+                  <Box marginLeft={2}>
+                    <Text color="gray" dimColor>{message.metadata.argsPreview}</Text>
+                  </Box>
+                )}
               </Box>
-            ) : message.type === 'tool_call' ? (
-              <Text color="magenta" bold>  ├─ {message.content}</Text>
-            ) : message.type === 'thinking' ? (
-              <Text color="yellow" dimColor>  ├─ {message.content}</Text>
-            ) : message.type === 'tool_result' ? (
-              <Text color="gray" dimColor>  ├─ {message.content}</Text>
-            ) : message.type === 'system' ? (
-              <Text color="cyan">💡 {message.content}</Text>
-            ) : message.type === 'error' ? (
-              <Text color="red">❌ {message.content}</Text>
-            ) : message.type === 'approval_request' ? (
-              <Text color="yellow" bold>  ├─ {message.content}</Text>
-            ) : null}
+            );
+          }
+          
+          // Don't show tool results - they're handled by tool errors only
+          if (message.type === 'tool_result') {
+            return null;
+          }
+          
+          // Show tool errors prominently
+          if (message.type === 'tool_error') {
+            return (
+              <Box key={message.id} marginBottom={1}>
+                <Text color="red" bold>{message.content}</Text>
+              </Box>
+            );
+          }
+          
+          // Handle agent messages - streaming or final
+          if (message.type === 'agent') {
+            const isFinal = message.metadata?.final;
+            const content = message.content;
+            
+            if (message.isStreaming) {
+              // Show streaming with a spinner/cursor
+              return (
+                <Box key={message.id} marginBottom={1} marginLeft={2}>
+                  <Text color="blue">
+                    {content}
+                    <Text color="yellow">▌</Text>
+                  </Text>
+                </Box>
+              );
+            } else if (isFinal) {
+              // Only truly final responses in a box
+              return (
+                <Box key={message.id} marginBottom={1} borderStyle="round" borderColor="blue" padding={1}>
+                  <Text color="blue">{content}</Text>
+                </Box>
+              );
+            }
+            
+            // Regular/intermediate agent message - no box
+            return (
+              <Box key={message.id} marginBottom={1} marginLeft={2}>
+                <Text color="blue">{content}</Text>
+              </Box>
+            );
+          }
+          
+          // Default rendering for other message types
+          return (
+            <Box key={message.id} marginBottom={1}>
+              {message.type === 'user' ? (
+                <Text color="green" bold>👤 {message.content}</Text>
+              ) : message.type === 'system' ? (
+                <Text color="cyan">💡 {message.content}</Text>
+              ) : message.type === 'error' ? (
+                <Text color="red">❌ {message.content}</Text>
+              ) : message.type === 'approval_request' ? (
+                <Text color="yellow" bold>🔐 {message.content}</Text>
+              ) : null}
+            </Box>
+          );
+        })}
+        
+        {/* Show spinner when waiting for response but no streaming message yet */}
+        {isResponding && !messages.some(m => m.isStreaming) && (
+          <Box marginTop={1} marginLeft={2}>
+            <Spinner message="Thinking" />
           </Box>
-        ))}
+        )}
       </Box>
 
       {/* Tool approval prompt when needed */}
@@ -218,7 +301,7 @@ export const App: React.FC = () => {
         />
         <Text color="gray" dimColor>
           {pendingApproval ? 'Awaiting tool approval' : buffer.text.startsWith('/') ? 'Command mode' : 'Chat mode'} • 
-          Use "/" for commands • Tool results: {showToolResults ? 'ON' : 'OFF'} • Ctrl+C to exit
+          Use "/" for commands • Press Ctrl+E to expand/collapse • Ctrl+C to exit
         </Text>
       </Box>
     </Box>

@@ -96,6 +96,8 @@ export interface StreamMessage {
   content: string;
   timestamp: Date;
   metadata?: Record<string, any>;
+  isStreaming?: boolean;
+  expanded?: boolean;
 }
 
 export interface UseMetagenStreamReturn {
@@ -110,13 +112,14 @@ export interface UseMetagenStreamReturn {
   handleSlashCommand: (command: string) => Promise<void>;
   pendingApproval: any | null;
   handleToolDecision: (approved: boolean, feedback?: string) => Promise<void>;
+  toggleMessageExpanded: (messageId: string) => void;
 }
 
 export function useMetagenStream(): UseMetagenStreamReturn {
   const [messages, setMessages] = useState<StreamMessage[]>([]);
   const [isResponding, setIsResponding] = useState(false);
   const [sessionId] = useState<string>(() => crypto.randomUUID());
-  const [showToolResults, setShowToolResults] = useState(true);
+  const [showToolResults, setShowToolResults] = useState(false);
   const [pendingApproval, setPendingApproval] = useState<SSEMessage | null>(null);
   const streamingClient = useRef<MetagenStreamingClient | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -132,7 +135,8 @@ export function useMetagenStream(): UseMetagenStreamReturn {
       type,
       content,
       timestamp: new Date(),
-      metadata
+      metadata,
+      expanded: false
     };
     setMessages(prev => [...prev, message]);
   }, []);
@@ -143,6 +147,12 @@ export function useMetagenStream(): UseMetagenStreamReturn {
 
   const toggleToolResults = useCallback(() => {
     setShowToolResults(prev => !prev);
+  }, []);
+
+  const toggleMessageExpanded = useCallback((messageId: string) => {
+    setMessages(prev => prev.map(msg => 
+      msg.id === messageId ? { ...msg, expanded: !msg.expanded } : msg
+    ));
   }, []);
 
   const handleSlashCommand = useCallback(async (command: string) => {
@@ -275,9 +285,8 @@ export function useMetagenStream(): UseMetagenStreamReturn {
       };
 
       // Stream the response
-      let currentMessage = '';
-      let messageId: string | null = null;
-      let hasStartedResponse = false;
+      let currentAgentMessageId: string | null = null;
+      let currentAgentContent = '';
       
       for await (const sseMessage of streamingClient.current!.chatStream(chatRequest)) {
         // Check if aborted
@@ -285,92 +294,103 @@ export function useMetagenStream(): UseMetagenStreamReturn {
           break;
         }
 
-        // Map SSE message types to UI message types
-        const mapMessageType = (type: MessageType): UIMessageType => {
-          switch (type) {
-            case MessageType.AGENT: return 'agent';
-            case MessageType.SYSTEM: return 'system';
-            case MessageType.THINKING: return 'thinking';
-            case MessageType.TOOL_CALL: return 'tool_call';
-            case MessageType.TOOL_RESULT: return 'tool_result';
-            case MessageType.TOOL_ERROR: return 'tool_error';
-            case MessageType.ERROR: return 'error';
-            case MessageType.APPROVAL_REQUEST: return 'approval_request';
-            case MessageType.APPROVAL_RESPONSE: return 'approval_response';
-            case MessageType.TOOL_STARTED: return 'tool_started';
-            case MessageType.USER: return 'user';
-            case MessageType.USAGE: return 'agent'; // Map usage to agent for UI
-            default: return 'agent';
-          }
-        };
-
-        const uiType = mapMessageType(sseMessage.type!);
-        
-        // Handle different message types using type guards
+        // Handle different message types - preserve exact stream order
         if (isAgentMessage(sseMessage)) {
-          // Accumulate agent messages for smooth display
-          if (!hasStartedResponse) {
-            hasStartedResponse = true;
-            addMessage('system', '└─ response:', 'system');
-          }
+          currentAgentContent += sseMessage.content;
           
-          currentMessage += sseMessage.content;
-          
-          if (!messageId) {
-            // Create new message for first chunk
-            messageId = `msg-${Date.now()}-${Math.random()}`;
+          if (!currentAgentMessageId) {
+            // Start a new agent message
+            currentAgentMessageId = `agent-${Date.now()}-${Math.random()}`;
             setMessages(prev => [...prev, {
-              id: messageId!,
+              id: currentAgentMessageId!,
               type: 'agent',
-              content: currentMessage,
+              content: currentAgentContent,
               timestamp: new Date(),
+              isStreaming: true,
               metadata: {}
             }]);
           } else {
-            // Update existing message
+            // Update the existing streaming message
             setMessages(prev => prev.map(msg => 
-              msg.id === messageId 
-                ? { ...msg, content: currentMessage }
+              msg.id === currentAgentMessageId 
+                ? { ...msg, content: currentAgentContent }
                 : msg
             ));
           }
           
           // Check if this is the final message
           if (sseMessage.final) {
-            currentMessage = '';
-            messageId = null;
-            hasStartedResponse = false;
+            // Finalize the message
+            setMessages(prev => prev.map(msg => 
+              msg.id === currentAgentMessageId 
+                ? { ...msg, isStreaming: false, metadata: { ...msg.metadata, final: true } }
+                : msg
+            ));
+            currentAgentMessageId = null;
+            currentAgentContent = '';
             break;
           }
-        } else if (isThinkingMessage(sseMessage)) {
-          addMessage('system', sseMessage.content, 'thinking', {});
-        } else if (isToolCallMessage(sseMessage)) {
-          // Handle multiple tool calls
-          for (const toolCall of sseMessage.tool_calls) {
-            const toolInfo = `🔧 Calling tool: ${toolCall.tool_name}`;
-            addMessage('agent', toolInfo, 'tool_call', { tool_id: toolCall.tool_id, args: toolCall.tool_args });
+        } else {
+          // If we have a streaming agent message, finalize it first
+          if (currentAgentMessageId) {
+            setMessages(prev => prev.map(msg => 
+              msg.id === currentAgentMessageId 
+                ? { ...msg, isStreaming: false }
+                : msg
+            ));
+            currentAgentMessageId = null;
+            currentAgentContent = '';
           }
-          // Reset message accumulation after tool calls
-          currentMessage = '';
-          messageId = null;
-          hasStartedResponse = false;
-        } else if (isToolStartedMessage(sseMessage)) {
-          const toolInfo = `▶️ Started: ${sseMessage.tool_name}`;
-          addMessage('system', toolInfo, 'tool_started', { tool_id: sseMessage.tool_id });
-        } else if (isToolResultMessage(sseMessage) && showToolResults) {
-          const formattedResult = typeof sseMessage.result === 'string' 
-            ? sseMessage.result 
-            : JSON.stringify(sseMessage.result, null, 2);
-          addMessage('system', `📊 Tool result from ${sseMessage.tool_name}:\n${formattedResult}`, 'tool_result', { tool_id: sseMessage.tool_id });
-        } else if (isToolErrorMessage(sseMessage)) {
-          addMessage('system', `❌ Tool error in ${sseMessage.tool_name}: ${sseMessage.error}`, 'tool_error', { tool_id: sseMessage.tool_id });
-        } else if (isErrorMessage(sseMessage)) {
-          addMessage('system', `❌ Error: ${sseMessage.error}`, 'error', sseMessage.details || {});
-          break;
-        } else if (isApprovalRequestMessage(sseMessage)) {
-          setPendingApproval(sseMessage);
-          const toolName = sseMessage.tool_name || 'Unknown tool';
-          addMessage('system', `🔐 Tool requires approval: ${toolName}`, 'approval_request', { tool_id: sseMessage.tool_id });
+          
+          // Add non-agent messages in order
+          if (isThinkingMessage(sseMessage)) {
+            // Don't show thinking messages - they clutter the output
+            // addMessage('system', `🤔 ${sseMessage.content}`, 'thinking', {});
+          } else if (isToolCallMessage(sseMessage)) {
+            // Show tool calls with arguments preview
+            for (const toolCall of sseMessage.tool_calls) {
+              const argsPreview = toolCall.tool_args 
+                ? JSON.stringify(toolCall.tool_args, null, 2)
+                : '';
+              // Create a short preview of arguments for the collapsed view
+              const shortArgs = toolCall.tool_args 
+                ? `(${Object.keys(toolCall.tool_args).map(k => `${k}: ${JSON.stringify(toolCall.tool_args[k])}`).join(', ').substring(0, 50)}...)`
+                : '()';
+              const toolInfo = `${toolCall.tool_name}${shortArgs}`;
+              addMessage('system', toolInfo, 'tool_call', { 
+                tool_id: toolCall.tool_id, 
+                tool_name: toolCall.tool_name,
+                args: toolCall.tool_args,
+                argsPreview 
+              });
+            }
+          } else if (isToolStartedMessage(sseMessage)) {
+            // Skip tool started messages to reduce clutter
+            // addMessage('system', `▶️ Started: ${sseMessage.tool_name}`, 'tool_started', { tool_id: sseMessage.tool_id });
+          } else if (isToolResultMessage(sseMessage)) {
+            // Store full result in metadata but don't show unless it's an error
+            const fullResult = typeof sseMessage.result === 'string' 
+              ? sseMessage.result 
+              : JSON.stringify(sseMessage.result, null, 2);
+            
+            // Only add a message for debugging - will be hidden by default
+            // Tool results are collapsed under their tool calls
+            // We don't show them unless explicitly expanded
+          } else if (isToolErrorMessage(sseMessage)) {
+            // Always show tool errors prominently
+            addMessage('error', `❌ Tool error in ${sseMessage.tool_name}: ${sseMessage.error}`, 'tool_error', { 
+              tool_id: sseMessage.tool_id,
+              tool_name: sseMessage.tool_name,
+              error: sseMessage.error
+            });
+          } else if (isErrorMessage(sseMessage)) {
+            addMessage('system', `❌ Error: ${sseMessage.error}`, 'error', sseMessage.details || {});
+            break;
+          } else if (isApprovalRequestMessage(sseMessage)) {
+            setPendingApproval(sseMessage);
+            const toolName = sseMessage.tool_name || 'Unknown tool';
+            addMessage('system', `🔐 Tool requires approval: ${toolName}`, 'approval_request', { tool_id: sseMessage.tool_id });
+          }
         }
       }
       
@@ -384,7 +404,7 @@ export function useMetagenStream(): UseMetagenStreamReturn {
       setIsResponding(false);
       abortControllerRef.current = null;
     }
-  }, [isResponding, addMessage, handleSlashCommand, sessionId, showToolResults]);
+  }, [isResponding, addMessage, handleSlashCommand, sessionId]);
 
   const handleToolDecision = useCallback(async (approved: boolean, feedback?: string) => {
     if (!pendingApproval || !isApprovalRequestMessage(pendingApproval)) return;
@@ -427,6 +447,7 @@ export function useMetagenStream(): UseMetagenStreamReturn {
     clearMessages,
     handleSlashCommand,
     pendingApproval,
-    handleToolDecision
+    handleToolDecision,
+    toggleMessageExpanded
   };
 }

@@ -18,7 +18,7 @@ if (!existsSync('bundle')) {
 const banner = `import { createRequire } from 'module'; const require = createRequire(import.meta.url); globalThis.__filename = require('url').fileURLToPath(import.meta.url); globalThis.__dirname = require('path').dirname(globalThis.__filename);`;
 
 build({
-  entryPoints: ['packages/cli/dist/index.js'],
+  entryPoints: ['packages/cli/dist/packages/cli/src/index.js'],
   bundle: true,
   outfile: 'bundle/metagen.js',
   platform: 'node',

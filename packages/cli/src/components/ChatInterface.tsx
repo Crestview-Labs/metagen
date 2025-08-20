@@ -2,46 +2,38 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Box, Text, useInput, useApp, Spacer, Static } from 'ink';
 import { 
   AuthenticationService,
-  ChatService,
-  ToolsService,
-  SystemService,
-  MemoryService,
-  MetagenStreamingClient,
-  OpenAPI,
-  type SSEMessage,
-  ApprovalDecision,
-  MessageType,
-  type ApprovalResponseMessage
+  OpenAPI
 } from '../../../../api/ts/src/index.js';
 import { ToolApprovalPrompt } from './ToolApprovalPrompt.js';
+import { useMetagenStream } from '../hooks/useMetagenStream.js';
 
 // Configure API base URL
 OpenAPI.BASE = process.env.METAGEN_API_URL || 'http://localhost:8080';
 
-interface Message {
-  id: string;
-  type: 'user' | 'agent' | 'error' | 'system' | 'thinking' | 'tool_call' | 'tool_result' | 'approval_request' | 'tool_approved' | 'tool_rejected';
-  content: string;
-  timestamp: Date;
-  isStreaming?: boolean;
-  metadata?: Record<string, any>;
-}
-
 export const ChatInterface: React.FC = () => {
-  const [staticMessages, setStaticMessages] = useState<Message[]>([]);
-  const [pendingMessages, setPendingMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null);
   const [staticKey, setStaticKey] = useState(0);
   const [isReady, setIsReady] = useState(false);
-  const [showHelp, setShowHelp] = useState(false);
-  const [pendingApproval, setPendingApproval] = useState<any | null>(null);
-  const [isWaitingForApproval, setIsWaitingForApproval] = useState(false);
   const [collectingFeedback, setCollectingFeedback] = useState(false);
   const [feedbackInput, setFeedbackInput] = useState('');
   const { exit } = useApp();
+
+  // Use the streaming hook for all chat functionality
+  const { 
+    messages, 
+    isResponding, 
+    sessionId, 
+    showToolResults, 
+    toggleToolResults, 
+    sendMessage, 
+    addMessage, 
+    clearMessages,
+    handleSlashCommand, 
+    pendingApproval, 
+    handleToolDecision,
+    toggleMessageExpanded
+  } = useMetagenStream();
 
   // Check authentication on mount
   useEffect(() => {
@@ -53,7 +45,7 @@ export const ChatInterface: React.FC = () => {
         if (!auth.authenticated) {
           addMessage('system', '⚠️  You are not authenticated. Type "/auth login" to authenticate with Google services.', 'error');
         } else {
-          addMessage('system', '🤖 Welcome to Metagen interactive chat!\n\n💡 Tips:\n  • Type your message and press Enter\n  • Use "/help" for commands\n  • Press Ctrl+C to exit\n  • Type "/clear" to clear chat history', 'system');
+          addMessage('system', '🤖 Welcome to Metagen interactive chat!\n\n💡 Tips:\n  • Type your message and press Enter\n  • Use "/help" for commands\n  • Press Ctrl+C to exit\n  • Type "/clear" to clear chat history\n  • Press Ctrl+E to expand/collapse tool results', 'system');
         }
       } catch (error) {
         setAuthenticated(false);
@@ -67,127 +59,26 @@ export const ChatInterface: React.FC = () => {
     setTimeout(() => setIsReady(true), 100);
   }, []);
 
-  const addMessage = useCallback((sender: string, content: string, type: 'user' | 'agent' | 'error' | 'system' | 'thinking' | 'tool_call' | 'tool_result' | 'approval_request' | 'tool_approved' | 'tool_rejected' = 'agent', metadata?: Record<string, any>) => {
-    const message: Message = {
-      id: `${Date.now()}-${Math.random()}`,
-      type,
-      content,
-      timestamp: new Date(),
-      metadata
-    };
-    setPendingMessages(prev => [...prev, message]);
-  }, []);
-
   const handleToolApprovalDecision = useCallback(async (approved: boolean, feedback?: string) => {
-    if (!pendingApproval) return;
-    
-    setIsWaitingForApproval(true);
-    
-    try {
-      // Send the approval decision to the API
-      const approvalMessage: ApprovalResponseMessage = {
-        type: MessageType.APPROVAL_RESPONSE,
-        timestamp: new Date().toISOString(),
-        agent_id: (pendingApproval as any).agent_id || 'USER',
-        session_id: sessionId || '',
-        tool_id: (pendingApproval as any).tool_id,
-        decision: approved ? ApprovalDecision.APPROVED : ApprovalDecision.REJECTED,
-        feedback: feedback
-      };
-      
-      await ChatService.handleApprovalResponseApiChatApprovalResponsePost({
-        requestBody: approvalMessage
-      });
-      
-      // Clear the pending approval and feedback state
-      setPendingApproval(null);
-      setCollectingFeedback(false);
-      setFeedbackInput('');
-      
-      // Add a message to show the decision
-      const statusMsg = approved 
-        ? `🔐 Tool approved: ${pendingApproval.tool_name}`
-        : `🔐 Tool rejected: ${pendingApproval.tool_name}${feedback ? ` (${feedback})` : ''}`;
-      addMessage('system', statusMsg, approved ? 'tool_approved' : 'tool_rejected');
-    } catch (error) {
-      addMessage('system', `❌ Error sending tool decision: ${error instanceof Error ? error.message : error}`, 'error');
-    } finally {
-      setIsWaitingForApproval(false);
-    }
-  }, [pendingApproval, addMessage]);
+    await handleToolDecision(approved, feedback);
+    setCollectingFeedback(false);
+    setFeedbackInput('');
+  }, [handleToolDecision]);
 
   const handleCommand = useCallback(async (command: string) => {
     const [cmd, ...args] = command.slice(1).split(' ');
     
-    switch (cmd.toLowerCase()) {
-      case 'help':
-        addMessage('system', '📋 Available Commands:\n\n/help - Show this help\n/clear - Clear chat history\n/auth status - Check authentication\n/auth login - Login with Google\n/tools - List available tools\n/system health - Check system status\n/quit or /exit - Exit chat', 'system');
-        break;
-        
-      case 'clear':
-        setStaticMessages([]);
-        setPendingMessages([]);
-        setStaticKey(prev => prev + 1);
-        addMessage('system', '🧹 Chat history cleared!', 'system');
-        break;
-        
-      case 'quit':
-      case 'exit':
-        exit();
-        break;
-        
-      case 'auth':
-        if (args[0] === 'status') {
-          try {
-            const auth = await AuthenticationService.getAuthStatusApiAuthStatusGet();
-            if (auth.authenticated) {
-              addMessage('system', `✅ Authenticated${auth.user_info?.email ? ` as ${auth.user_info.email}` : ''}`, 'system');
-            } else {
-              addMessage('system', '⚠️  Not authenticated. Use "/auth login" to authenticate.', 'error');
-            }
-          } catch (error) {
-            addMessage('system', `❌ Auth check failed: ${error instanceof Error ? error.message : error}`, 'error');
-          }
-        } else if (args[0] === 'login') {
-          try {
-            const response = await AuthenticationService.loginApiAuthLoginPost({
-              requestBody: { force: false }
-            });
-            addMessage('system', `🔐 ${response.message}\n🌐 Open: ${response.auth_url}`, 'system');
-          } catch (error) {
-            addMessage('system', `❌ Login failed: ${error instanceof Error ? error.message : error}`, 'error');
-          }
-        }
-        break;
-        
-      case 'tools':
-        try {
-          const tools = await ToolsService.getToolsApiToolsGet();
-          const toolsList = tools.tools.map((tool, i) => `  ${i + 1}. ${tool.name} - ${tool.description}`).join('\n');
-          addMessage('system', `🔧 Available Tools (${tools.count}):\n\n${toolsList}`, 'system');
-        } catch (error) {
-          addMessage('system', `❌ Failed to fetch tools: ${error instanceof Error ? error.message : error}`, 'error');
-        }
-        break;
-        
-      case 'system':
-        if (args[0] === 'health') {
-          try {
-            await SystemService.healthCheckApiSystemHealthGet();
-            addMessage('system', `🏥 System Health: HEALTHY`, 'system');
-          } catch (error) {
-            addMessage('system', `❌ Health check failed: ${error instanceof Error ? error.message : error}`, 'error');
-          }
-        }
-        break;
-        
-      default:
-        addMessage('system', `❓ Unknown command: /${cmd}. Type "/help" for available commands.`, 'error');
+    if (cmd.toLowerCase() === 'quit' || cmd.toLowerCase() === 'exit') {
+      exit();
+      return;
     }
-  }, [addMessage, exit]);
+    
+    // Delegate all other commands to the hook
+    await handleSlashCommand(command);
+  }, [handleSlashCommand, exit]);
 
-  const sendMessage = useCallback(async () => {
-    if (!input.trim() || isLoading) return;
+  const handleSendMessage = useCallback(async () => {
+    if (!input.trim() || isResponding) return;
     
     // Don't allow sending messages while there's a pending approval
     if (pendingApproval) {
@@ -204,76 +95,33 @@ export const ChatInterface: React.FC = () => {
       return;
     }
 
-    setIsLoading(true);
+    // Send the message using the hook
+    await sendMessage(userMessage);
+  }, [input, isResponding, pendingApproval, addMessage, sendMessage, handleCommand]);
 
-    // Add user message
-    addMessage('user', userMessage, 'user');
-
-    try {
-      // Use streaming API
-      const client = new MetagenStreamingClient();
-      // Generate a session ID if we don't have one
-      if (!sessionId) {
-        const newSessionId = Math.random().toString(36).substring(2) + Date.now().toString(36);
-        setSessionId(newSessionId);
-      }
-      
-      const streamGenerator = client.chatStream({ message: userMessage, session_id: sessionId || '' });
-      
-      for await (const message of streamGenerator) {
-        // Check for completion (AgentMessage with final flag)
-        if (message.type === MessageType.AGENT && (message as any).final) {
-          break;
-        }
-        
-        // Handle different response types
-        switch (message.type) {
-          case MessageType.AGENT:
-            addMessage('agent', (message as any).content, 'agent', (message as any).metadata);
-            break;
-          case MessageType.THINKING:
-            addMessage('system', (message as any).content, 'thinking', (message as any).metadata);
-            break;
-          case MessageType.TOOL_CALL:
-            addMessage('system', `🔧 Calling tool: ${(message as any).tool_name}`, 'tool_call', { tool_id: (message as any).tool_id });
-            break;
-          case MessageType.TOOL_RESULT:
-            addMessage('system', `✅ Result from ${(message as any).tool_name}`, 'tool_result', { tool_id: (message as any).tool_id });
-            break;
-          case MessageType.TOOL_ERROR:
-            addMessage('system', `❌ Tool error: ${(message as any).error}`, 'error', { tool_id: (message as any).tool_id });
-            break;
-          case MessageType.APPROVAL_REQUEST:
-            setPendingApproval(message);
-            addMessage('system', `🔐 Tool requires approval: ${(message as any).tool_name}`, 'approval_request', { tool_id: (message as any).tool_id });
-            break;
-          case MessageType.ERROR:
-            addMessage('system', `❌ ${(message as any).message}`, 'error', {});
-            break;
-        }
-      }
-      
-    } catch (error) {
-      addMessage('system', `❌ Error: ${error instanceof Error ? error.message : error}`, 'error');
-    } finally {
-      setIsLoading(false);
-      // Move pending messages to static after completion
-      setTimeout(() => {
-        setPendingMessages(pending => {
-          if (pending.length > 0) {
-            setStaticMessages(staticMsgs => [...staticMsgs, ...pending]);
-            setStaticKey(prev => prev + 1);
-            return [];
-          }
-          return pending;
-        });
-      }, 100);
-    }
-  }, [input, isLoading, addMessage, handleCommand, sessionId]);
+  // Track which message to expand/collapse
+  const [expandIndex, setExpandIndex] = useState<number | null>(null);
 
   useInput((input: string, key: any) => {
     if (key.ctrl && input === 'c') {
       exit();
+      return;
+    }
+
+    // Handle expand/collapse for tool results
+    if (key.ctrl && input === 'e' && !collectingFeedback && !pendingApproval) {
+      // Find the last tool result or tool call message
+      let lastExpandable = -1;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if ((msg.type === 'tool_result' || msg.type === 'tool_call') && msg.metadata) {
+          lastExpandable = i;
+          break;
+        }
+      }
+      if (lastExpandable !== -1) {
+        toggleMessageExpanded(messages[lastExpandable].id);
+      }
       return;
     }
 
@@ -299,7 +147,7 @@ export const ChatInterface: React.FC = () => {
     }
 
     // Handle tool approval shortcuts
-    if (pendingApproval && !isWaitingForApproval) {
+    if (pendingApproval && !isResponding) {
       if (input?.toLowerCase() === 'y') {
         handleToolApprovalDecision(true);
         return;
@@ -307,14 +155,17 @@ export const ChatInterface: React.FC = () => {
         setCollectingFeedback(true);
         return;
       } else if (input?.toLowerCase() === 'd') {
-        // TODO: Show details view
-        addMessage('system', 'Details view not yet implemented', 'system');
+        // Show details view
+        const details = pendingApproval.tool_args 
+          ? JSON.stringify(pendingApproval.tool_args, null, 2)
+          : 'No arguments';
+        addMessage('system', `Tool details: ${details}`, 'system');
         return;
       }
     }
 
     if (key.return) {
-      sendMessage();
+      handleSendMessage();
       return;
     }
 
@@ -345,10 +196,11 @@ export const ChatInterface: React.FC = () => {
       case 'system': return '💡';
       case 'thinking': return '🤔';
       case 'tool_call': return '🔧';
+      case 'tool_started': return '▶️';
       case 'tool_result': return '📊';
+      case 'tool_error': return '❌';
       case 'approval_request': return '🔐';
-      case 'tool_approved': return '✅';
-      case 'tool_rejected': return '❌';
+      case 'approval_response': return '🔐';
       default: return '📝';
     }
   };
@@ -361,12 +213,72 @@ export const ChatInterface: React.FC = () => {
       case 'system': return 'cyan';
       case 'thinking': return 'yellow';
       case 'tool_call': return 'magenta';
+      case 'tool_started': return 'gray';
       case 'tool_result': return 'cyan';
+      case 'tool_error': return 'red';
       case 'approval_request': return 'yellow';
-      case 'tool_approved': return 'green';
-      case 'tool_rejected': return 'red';
+      case 'approval_response': return 'yellow';
       default: return 'white';
     }
+  };
+
+  const renderMessage = (message: any) => {
+    const icon = getMessageIcon(message.type);
+    const color = getMessageColor(message.type);
+    const timestamp = formatTimestamp(message.timestamp);
+    
+    // Handle tool calls with collapsible arguments
+    if (message.type === 'tool_call' && message.metadata) {
+      return (
+        <Box flexDirection="column">
+          <Text color={color}>
+            {icon} [{timestamp}] {message.content}
+            {message.metadata.args && (
+              <Text dimColor> {message.expanded ? '▼' : '▶'} (Ctrl+E to {message.expanded ? 'collapse' : 'expand'})</Text>
+            )}
+          </Text>
+          {message.expanded && message.metadata.argsPreview && (
+            <Box marginLeft={4} marginTop={1}>
+              <Text color="gray">{message.metadata.argsPreview}</Text>
+            </Box>
+          )}
+        </Box>
+      );
+    }
+    
+    // Handle tool results with collapsible details
+    if (message.type === 'tool_result' && message.metadata) {
+      return (
+        <Box flexDirection="column">
+          <Text color={color}>
+            {icon} [{timestamp}] {message.content}
+            <Text dimColor> {message.expanded ? '▼' : '▶'} (press 'e' to {message.expanded ? 'collapse' : 'expand'})</Text>
+          </Text>
+          {message.expanded && message.metadata.result && (
+            <Box marginLeft={4} marginTop={1}>
+              <Text color="gray">{message.metadata.result.substring(0, 500)}{message.metadata.result.length > 500 ? '...' : ''}</Text>
+            </Box>
+          )}
+        </Box>
+      );
+    }
+    
+    // Handle streaming agent messages
+    if (message.type === 'agent' && message.isStreaming) {
+      return (
+        <Text color={color}>
+          {icon} [{timestamp}] {message.content}
+          <Text color="yellow">▌</Text>
+        </Text>
+      );
+    }
+    
+    // Default message rendering
+    return (
+      <Text color={color}>
+        {icon} [{timestamp}] {message.content}
+      </Text>
+    );
   };
 
   // Don't render until ready to avoid multiple redraws
@@ -379,25 +291,14 @@ export const ChatInterface: React.FC = () => {
       <Text bold color="blue">🤖 Metagen Chat {authenticated !== null && (authenticated ? '🟢' : '🔴')}</Text>
       <Text color="gray">Type your message, use /help for commands, Ctrl+C to exit</Text>
       
-      {/* Static messages - rendered once and never re-rendered */}
-      <Static key={staticKey} items={staticMessages.map(message => (
-        <Box key={message.id} marginBottom={1}>
-          <Text color={getMessageColor(message.type)}>
-            {getMessageIcon(message.type)} [{formatTimestamp(message.timestamp)}] {message.content}
-          </Text>
-        </Box>
-      ))}>
-        {(item) => item}
-      </Static>
-      
-      {/* Pending messages - dynamically rendered */}
-      {pendingMessages.map(message => (
-        <Box key={message.id} marginBottom={1}>
-          <Text color={getMessageColor(message.type)}>
-            {getMessageIcon(message.type)} [{formatTimestamp(message.timestamp)}] {message.content}
-          </Text>
-        </Box>
-      ))}
+      {/* Messages - rendered in chronological order from the hook */}
+      <Box flexDirection="column" marginTop={1}>
+        {messages.map(message => (
+          <Box key={message.id} marginBottom={1}>
+            {renderMessage(message)}
+          </Box>
+        ))}
+      </Box>
       
       {/* Input area or Tool Approval Prompt */}
       {pendingApproval ? (
@@ -414,13 +315,13 @@ export const ChatInterface: React.FC = () => {
           <ToolApprovalPrompt
             approval={pendingApproval}
             onDecision={handleToolApprovalDecision}
-            isResponding={isWaitingForApproval}
+            isResponding={isResponding}
           />
         )
       ) : (
         <Box marginTop={1}>
           <Text>{'>'} {input}</Text>
-          {isLoading && <Text color="yellow"> [Thinking...]</Text>}
+          {isResponding && <Text color="yellow"> [Processing your request...]</Text>}
         </Box>
       )}
     </Box>
