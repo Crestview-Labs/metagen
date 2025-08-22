@@ -18,6 +18,7 @@ from common.messages import (
     ApprovalResponseMessage,
     ErrorMessage,
     Message,
+    SystemMessage,
     ThinkingMessage,
     ToolCallMessage,
     ToolCallRequest,
@@ -308,7 +309,14 @@ class BaseAgent(ABC):
                 self.agent_id, session_id, iteration
             )
             if limit_feedback:
-                current_messages.append(limit_feedback)
+                # Inject the feedback as a system message
+                current_messages.append(
+                    SystemMessage(
+                        agent_id=self.agent_id,
+                        session_id=session_id,
+                        content=limit_feedback.content,
+                    )
+                )
                 if self._iteration_handler.is_at_limit(iteration):
                     logger.warning(f"[{self.agent_id}] Iteration limit reached, forcing completion")
                     # Continue to let LLM provide final response, but no more tools

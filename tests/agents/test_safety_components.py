@@ -8,7 +8,7 @@ from common.types import ToolErrorType
 class TestIterationLimitHandler:
     """Test iteration limit handler."""
 
-    def test_no_warning_below_threshold(self):
+    def test_no_warning_below_threshold(self) -> None:
         """Should not warn when below threshold."""
         handler = IterationLimitHandler(max_iterations=10)
 
@@ -17,7 +17,7 @@ class TestIterationLimitHandler:
             result = handler.check_iteration_limit("test-agent", "test-session", i)
             assert result is None
 
-    def test_warning_at_80_percent(self):
+    def test_warning_at_80_percent(self) -> None:
         """Should warn at 80% of limit."""
         handler = IterationLimitHandler(max_iterations=10)
 
@@ -28,7 +28,7 @@ class TestIterationLimitHandler:
         assert "approaching the iteration limit" in result.content
         assert result.is_error is False
 
-    def test_final_warning_at_90_percent(self):
+    def test_final_warning_at_90_percent(self) -> None:
         """Should give final warning at 90% of limit."""
         handler = IterationLimitHandler(max_iterations=10)
 
@@ -38,7 +38,7 @@ class TestIterationLimitHandler:
         assert "very close to the iteration limit" in result.content
         assert result.is_error is False
 
-    def test_hard_limit_reached(self):
+    def test_hard_limit_reached(self) -> None:
         """Should error when limit is reached."""
         handler = IterationLimitHandler(max_iterations=10)
 
@@ -49,7 +49,7 @@ class TestIterationLimitHandler:
         assert result.is_error is True
         assert result.error_type == ToolErrorType.INVALID_ARGS
 
-    def test_is_at_limit(self):
+    def test_is_at_limit(self) -> None:
         """Test is_at_limit method."""
         handler = IterationLimitHandler(max_iterations=10)
 
@@ -61,7 +61,7 @@ class TestIterationLimitHandler:
 class TestRepetitionDetector:
     """Test repetition detector."""
 
-    def test_no_repetition_below_threshold(self):
+    def test_no_repetition_below_threshold(self) -> None:
         """Should not detect repetition below threshold."""
         detector = RepetitionDetector({"exact_threshold": 3})
 
@@ -76,7 +76,7 @@ class TestRepetitionDetector:
         )
         assert result2 is None
 
-    def test_exact_repetition_detection(self):
+    def test_exact_repetition_detection(self) -> None:
         """Should detect exact repetition at threshold."""
         detector = RepetitionDetector({"exact_threshold": 3})
 
@@ -93,7 +93,7 @@ class TestRepetitionDetector:
         assert result.is_error is True
         assert result.metadata == {"feedback": result.content}
 
-    def test_different_args_not_counted(self):
+    def test_different_args_not_counted(self) -> None:
         """Different arguments should not count as repetition."""
         detector = RepetitionDetector({"exact_threshold": 3})
 
@@ -112,7 +112,7 @@ class TestRepetitionDetector:
         assert result2 is None
         assert result3 is None
 
-    def test_pattern_detection(self):
+    def test_pattern_detection(self) -> None:
         """Should detect circular patterns."""
         detector = RepetitionDetector(
             {
@@ -131,7 +131,7 @@ class TestRepetitionDetector:
         assert "repeating a pattern" in result.content
         assert "toolA → toolB" in result.content
 
-    def test_tool_limits(self):
+    def test_tool_limits(self) -> None:
         """Should enforce per-tool limits."""
         detector = RepetitionDetector({"exact_threshold": 10})
         tool_limits = {"execute_command": 2}
@@ -154,7 +154,7 @@ class TestRepetitionDetector:
         assert "Tool limit exceeded" in result3.content
         assert "limit: 2" in result3.content
 
-    def test_reset(self):
+    def test_reset(self) -> None:
         """Reset should clear all state."""
         detector = RepetitionDetector({"exact_threshold": 2})
 

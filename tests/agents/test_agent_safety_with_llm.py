@@ -62,6 +62,7 @@ class TestIterationLimitWithMockLLM:
         config.LOOP_SAFETY_CONFIG["max_tool_iterations"] = 5
 
         # Reinitialize meta agent to pick up new config
+        assert agent_manager.meta_agent is not None
         await agent_manager.meta_agent.initialize()
 
         call_count = 0
@@ -101,7 +102,9 @@ class TestIterationLimitWithMockLLM:
                 )
 
         # Mock the LLM client
-        agent_manager.meta_agent.llm_client.generate_stream_with_tools = mock_llm_stream
+        assert agent_manager.meta_agent is not None
+        assert agent_manager.meta_agent.llm_client is not None
+        agent_manager.meta_agent.llm_client.generate_stream_with_tools = mock_llm_stream  # type: ignore[method-assign]
 
         # Process the message
         messages = []
@@ -140,6 +143,7 @@ class TestIterationLimitWithMockLLM:
         config.LOOP_SAFETY_CONFIG["max_tool_iterations"] = 5
 
         # Reinitialize meta agent to pick up new config
+        assert agent_manager.meta_agent is not None
         await agent_manager.meta_agent.initialize()
 
         call_count = 0
@@ -187,7 +191,9 @@ class TestIterationLimitWithMockLLM:
                 )
 
         # Mock the LLM client
-        agent_manager.meta_agent.llm_client.generate_stream_with_tools = mock_llm_stream
+        assert agent_manager.meta_agent is not None
+        assert agent_manager.meta_agent.llm_client is not None
+        agent_manager.meta_agent.llm_client.generate_stream_with_tools = mock_llm_stream  # type: ignore[method-assign]
 
         # Process the message
         messages = []
@@ -285,7 +291,9 @@ class TestRepetitionDetectionWithMockLLM:
                 )
 
         # Mock the LLM client
-        agent_manager.meta_agent.llm_client.generate_stream_with_tools = mock_llm_stream
+        assert agent_manager.meta_agent is not None
+        assert agent_manager.meta_agent.llm_client is not None
+        agent_manager.meta_agent.llm_client.generate_stream_with_tools = mock_llm_stream  # type: ignore[method-assign]
 
         # Process the message
         messages = []
@@ -376,7 +384,9 @@ class TestRepetitionDetectionWithMockLLM:
                 )
 
         # Mock the LLM client
-        agent_manager.meta_agent.llm_client.generate_stream_with_tools = mock_llm_stream
+        assert agent_manager.meta_agent is not None
+        assert agent_manager.meta_agent.llm_client is not None
+        agent_manager.meta_agent.llm_client.generate_stream_with_tools = mock_llm_stream  # type: ignore[method-assign]
 
         # Process the message
         messages = []
@@ -406,9 +416,10 @@ class TestRepetitionDetectionWithMockLLM:
         import config
 
         original_config = config.LOOP_SAFETY_CONFIG.copy()
-        config.LOOP_SAFETY_CONFIG["tool_limits"]["execute_command"] = 2
+        config.LOOP_SAFETY_CONFIG["tool_limits"]["execute_command"] = 2  # type: ignore[index]
 
         # Reinitialize meta agent to pick up new config
+        assert agent_manager.meta_agent is not None
         await agent_manager.meta_agent.initialize()
 
         call_count = 0
@@ -473,7 +484,9 @@ class TestRepetitionDetectionWithMockLLM:
                 )
 
         # Mock the LLM client
-        agent_manager.meta_agent.llm_client.generate_stream_with_tools = mock_llm_stream
+        assert agent_manager.meta_agent is not None
+        assert agent_manager.meta_agent.llm_client is not None
+        agent_manager.meta_agent.llm_client.generate_stream_with_tools = mock_llm_stream  # type: ignore[method-assign]
 
         # Process the message
         messages = []
@@ -523,6 +536,7 @@ class TestSafetyWithRealLLM:
         config.LOOP_SAFETY_CONFIG["max_tool_iterations"] = 3
 
         # Reinitialize to pick up new config
+        assert agent_manager.meta_agent is not None
         await agent_manager.meta_agent.initialize()
 
         try:

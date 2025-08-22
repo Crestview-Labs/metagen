@@ -112,7 +112,7 @@ TOOL_APPROVAL_CONFIG: dict[str, Any] = {
 }
 
 # Agentic Loop Safety Configuration
-LOOP_SAFETY_CONFIG = {
+LOOP_SAFETY_CONFIG: dict[str, Any] = {
     # Master enable/disable for all safety features
     "enabled": os.getenv("LOOP_SAFETY_ENABLED", "true").lower() == "true",
     # Maximum tool-calling iterations within a single turn

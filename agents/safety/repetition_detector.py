@@ -285,7 +285,7 @@ class RepetitionDetector:
             metadata={"feedback": message},
         )
 
-    def reset(self):
+    def reset(self) -> None:
         """Reset the detector state for a new turn."""
         self.call_counts.clear()
         self.call_history.clear()
