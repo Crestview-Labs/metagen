@@ -1,12 +1,13 @@
 """Base Agent - Clean implementation following agentic-loop-refactor-plan.md"""
 
 import asyncio
-import json
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, AsyncIterator, Optional, Union
 
+from agents.safety.iteration_handler import IterationLimitHandler
+from agents.safety.repetition_detector import RepetitionDetector
 from agents.tool_tracker import ToolTracker, TrackedTool
 from client.llm_client import LLMClient
 from client.models import ModelID
@@ -35,6 +36,7 @@ from common.types import (
     TurnCompletionRequest,
     TurnCreationRequest,
 )
+from config import LOOP_SAFETY_CONFIG
 from tools.base import Tool
 from tools.registry import get_tool_executor
 
@@ -269,6 +271,24 @@ class BaseAgent(ABC):
             f"for session {session_id}, turn {turn_id}"
         )
 
+        # Safety is ALWAYS on
+        max_iterations = LOOP_SAFETY_CONFIG["max_tool_iterations"]
+        debug = LOOP_SAFETY_CONFIG.get("debug", False)
+
+        # Initialize safety components
+        logger.info(
+            f"[{self.agent_id}] Initializing safety components - "
+            f"Max iterations: {max_iterations}, "
+            f"Repetition threshold: {LOOP_SAFETY_CONFIG['repetition'].get('exact_threshold', 3)}, "
+            f"Pattern detection: {LOOP_SAFETY_CONFIG['repetition'].get('pattern_detection', True)}"
+        )
+
+        self._iteration_handler = IterationLimitHandler(max_iterations, debug=debug)
+        self._repetition_detector = RepetitionDetector(
+            LOOP_SAFETY_CONFIG["repetition"], debug=debug
+        )
+        tool_limits = LOOP_SAFETY_CONFIG.get("tool_limits", {})
+
         # Track all content and tool usage for final turn update
         all_response_content = []
         all_tool_calls = []
@@ -278,13 +298,20 @@ class BaseAgent(ABC):
         previous_tool_calls = None
         previous_tool_results = None
 
-        # For duplicate tool call prevention
-        tool_call_history: dict[str, int] = {}  # key: "tool_name:args_hash" -> count
-
         # Main conversation loop
-        while iteration < self._max_iterations:
+        while iteration < max_iterations:
             iteration += 1
             logger.debug(f"[{self.agent_id}] 🔄 Agentic loop iteration {iteration}")
+
+            # Check iteration limit and inject feedback if needed
+            limit_feedback = self._iteration_handler.check_iteration_limit(
+                self.agent_id, session_id, iteration
+            )
+            if limit_feedback:
+                current_messages.append(limit_feedback)
+                if self._iteration_handler.is_at_limit(iteration):
+                    logger.warning(f"[{self.agent_id}] Iteration limit reached, forcing completion")
+                    # Continue to let LLM provide final response, but no more tools
 
             # Get LLM stream (previous_tool_calls/results are None on first iteration)
             if not self.llm_client:
@@ -370,7 +397,7 @@ class BaseAgent(ABC):
                 f"with {len(tool_requests)} tools"
             )
             async for item in self._handle_tool_flow(
-                tool_requests, turn_id, tool_call_history, session_id
+                tool_requests, turn_id, session_id, self._repetition_detector, tool_limits
             ):
                 logger.info(
                     f"[{self.agent_id}] [_run_conversation_loop] "
@@ -447,8 +474,9 @@ class BaseAgent(ABC):
         self,
         tool_requests: list[ToolCallRequest],
         turn_id: str,
-        tool_call_history: dict[str, int],
         session_id: str,
+        repetition_detector: RepetitionDetector,
+        tool_limits: dict[str, int],
     ) -> AsyncIterator[Union[Message, list[ToolExecution]]]:
         """Handle complete tool flow including approvals.
 
@@ -470,19 +498,27 @@ class BaseAgent(ABC):
 
         # Process all tool requests
         valid_tools = 0
-        max_repeated_calls = 3  # Configurable limit
 
         for request in tool_requests:
             tool_id = request.tool_id
             tool_name = request.tool_name
             tool_args = request.tool_args
 
-            # Check for duplicate tool calls
-            tool_key = f"{tool_name}:{json.dumps(tool_args, sort_keys=True)}"
-            call_count = tool_call_history.get(tool_key, 0)
+            # Check for repetition using the safety component
+            repetition_feedback = repetition_detector.check_repetition(
+                self.agent_id, session_id, tool_name, tool_args, tool_limits
+            )
 
-            if call_count >= max_repeated_calls:
-                # Reject due to too many repeated calls
+            if repetition_feedback:
+                # Tool was rejected due to repetition - return feedback immediately
+                yield ToolResultMessage(
+                    agent_id=self.agent_id,
+                    session_id=session_id,
+                    tool_id=tool_id,
+                    tool_name=tool_name,
+                    result=repetition_feedback.content,
+                )
+                # Track as rejected
                 tracked_tool = TrackedTool(
                     tool_id=tool_id,
                     tool_name=tool_name,
@@ -490,7 +526,7 @@ class BaseAgent(ABC):
                     stage=ToolExecutionStage.REJECTED,
                     agent_id=self.agent_id,
                     turn_id=turn_id,
-                    error=f"Tool '{tool_name}' called too many times with same arguments",
+                    error=repetition_feedback.content,
                 )
             else:
                 # Validate tool exists
@@ -507,9 +543,6 @@ class BaseAgent(ABC):
                         error="Tool not found",
                     )
                 else:
-                    # Update call history
-                    tool_call_history[tool_key] = call_count + 1
-
                     # Check if needs approval
                     needs_approval = self._tool_requires_approval(tool_name)
                     tracked_tool = TrackedTool(

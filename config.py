@@ -110,3 +110,27 @@ TOOL_APPROVAL_CONFIG: dict[str, Any] = {
         "slides_delete_slide",
     ],
 }
+
+# Agentic Loop Safety Configuration
+LOOP_SAFETY_CONFIG = {
+    # Master enable/disable for all safety features
+    "enabled": os.getenv("LOOP_SAFETY_ENABLED", "true").lower() == "true",
+    # Maximum tool-calling iterations within a single turn
+    # Set high to allow complex tasks while preventing infinite loops
+    "max_tool_iterations": int(os.getenv("LOOP_MAX_TOOL_ITERATIONS", "50")),
+    # Repetition detection settings
+    "repetition": {
+        # How many identical tool calls before intervention
+        "exact_threshold": int(os.getenv("LOOP_REPETITION_THRESHOLD", "3")),
+        # Enable pattern detection (e.g., A->B->A->B)
+        "pattern_detection": os.getenv("LOOP_PATTERN_DETECTION", "true").lower() == "true",
+    },
+    # Per-tool safety limits for expensive/dangerous operations
+    "tool_limits": {
+        "execute_command": int(os.getenv("LIMIT_EXECUTE_COMMAND", "5")),
+        "web_search": int(os.getenv("LIMIT_WEB_SEARCH", "10")),
+        "write_file": int(os.getenv("LIMIT_WRITE_FILE", "20")),
+    },
+    # Debug mode for understanding safety interventions
+    "debug": os.getenv("LOOP_DEBUG", "false").lower() == "true",
+}
