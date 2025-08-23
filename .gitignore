@@ -66,6 +66,8 @@ api/ts/dist/
 api/ts/lib/
 api/ts/**/*.js
 api/ts/**/*.d.ts
+api/ts/**/*.js.map
+api/ts/**/*.d.ts.map
 !api/ts/jest.config.js
 
 # Swift
@@ -87,6 +89,9 @@ DerivedData/
 
 # Build artifacts
 build/artifacts/
+cli/dist/
+cli/build/
+cli/dist-macos/
 
 # Generated/cache files
 api/.openapi-cache.json
