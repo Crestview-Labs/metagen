@@ -168,6 +168,8 @@ ignore_missing_imports = true
 exclude = [
     "packages/.*",  # TypeScript code
     "bundle/.*",    # Bundled output
+    "cli/build/.*", # CLI build artifacts
+    "cli/dist/.*",  # CLI TypeScript output
 ]
 
 [[tool.mypy.overrides]]
