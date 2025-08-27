@@ -1,5 +1,5 @@
 // SSE Streaming wrapper for Metagen API v0.1.1
-// Generated: 2025-08-19T21:14:18.930648+00:00
+// Generated: 2025-08-25T21:06:52.154752+00:00
 
 import Foundation
 import OpenAPIRuntime
@@ -45,11 +45,21 @@ public class MetagenStreamingClient {
                                 continuation.yield(response)
                                 
                                 // Check for completion
-                                if let dict = response as? [String: Any],
-                                   let type = dict["type"] as? String,
-                                   type == "complete" {
-                                    continuation.finish()
-                                    return
+                                if let dict = response as? [String: Any] {
+                                    // Check if it's an agent message with final flag
+                                    if let type = dict["type"] as? String, 
+                                       type == "agent",
+                                       let final = dict["final"] as? Bool,
+                                       final == true {
+                                        continuation.finish()
+                                        return
+                                    }
+                                    // Also check for explicit complete type (legacy)
+                                    if let type = dict["type"] as? String,
+                                       type == "complete" {
+                                        continuation.finish()
+                                        return
+                                    }
                                 }
                             }
                         }
