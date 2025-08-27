@@ -20,7 +20,7 @@ class MetagenBuilder:
         self.root = Path(__file__).parent.absolute()
         self.platform = platform.system().lower()
 
-    def log(self, message: str, level: str = "info"):
+    def log(self, message: str, level: str = "info") -> None:
         """Log messages with emoji prefixes"""
         prefixes = {
             "info": "ℹ️ ",
@@ -49,11 +49,11 @@ class MetagenBuilder:
 
         try:
             with urllib.request.urlopen("http://localhost:8985/health", timeout=1) as response:
-                return response.status == 200
+                return bool(response.status == 200)
         except Exception:
             return False
 
-    def generate_api_stubs(self, force: bool = False):
+    def generate_api_stubs(self, force: bool = False) -> bool:
         """Generate TypeScript and Swift API stubs"""
         self.log("Generating API stubs...", "build")
 
@@ -76,7 +76,7 @@ class MetagenBuilder:
         self.log("API stubs generated", "success")
         return True
 
-    def build_typescript_api(self):
+    def build_typescript_api(self) -> bool:
         """Build TypeScript API package"""
         self.log("Building TypeScript API...", "build")
 
@@ -94,7 +94,7 @@ class MetagenBuilder:
         self.log("TypeScript API built", "success")
         return True
 
-    def build_swift_api(self):
+    def build_swift_api(self) -> bool:
         """Build Swift API package"""
         if self.platform != "darwin":
             self.log("Swift API can only be built on macOS", "warning")
@@ -113,7 +113,7 @@ class MetagenBuilder:
         self.log("Swift API built", "success")
         return True
 
-    def build_cli(self):
+    def build_cli(self) -> bool:
         """Build CLI application"""
         self.log("Building CLI...", "build")
 
@@ -131,7 +131,7 @@ class MetagenBuilder:
         self.log("CLI built", "success")
         return True
 
-    def build_backend_executable(self):
+    def build_backend_executable(self) -> bool:
         """Build Python backend as standalone executable"""
         self.log("Building backend executable...", "build")
 
@@ -151,7 +151,7 @@ class MetagenBuilder:
         self.log("Backend executable built", "success")
         return True
 
-    def create_backend_build_script(self):
+    def create_backend_build_script(self) -> None:
         """Create PyInstaller build script for backend"""
         script_path = self.root / "backend" / "build.sh"
         script_content = """#!/bin/bash
@@ -185,7 +185,7 @@ echo "✅ Backend executable built at dist/ambient-backend/"
         script_path.chmod(0o755)
         self.log("Created backend build script", "info")
 
-    def build_mac_app(self):
+    def build_mac_app(self) -> bool:
         """Build macOS application"""
         if self.platform != "darwin":
             self.log("Mac app can only be built on macOS", "warning")
@@ -299,7 +299,7 @@ echo "✅ Backend executable built at dist/ambient-backend/"
         self.log("Mac app built", "success")
         return True
 
-    def package_mac_app(self):
+    def package_mac_app(self) -> bool:
         """Package Mac app as DMG"""
         if self.platform != "darwin":
             self.log("Mac app can only be packaged on macOS", "warning")
@@ -342,7 +342,7 @@ echo "✅ Backend executable built at dist/ambient-backend/"
         self.log(f"DMG created at {dmg_path}", "success")
         return True
 
-    def build_all(self):
+    def build_all(self) -> bool:
         """Build everything"""
         self.log("Building all components...", "build")
 
@@ -375,7 +375,7 @@ echo "✅ Backend executable built at dist/ambient-backend/"
         self.log("All components built successfully!", "success")
         return True
 
-    def clean(self):
+    def clean(self) -> bool:
         """Clean all build artifacts"""
         self.log("Cleaning build artifacts...", "info")
 
@@ -400,7 +400,7 @@ echo "✅ Backend executable built at dist/ambient-backend/"
         return True
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description="Metagen master build script")
     parser.add_argument("--all", action="store_true", help="Build everything")
     parser.add_argument("--api-stubs", action="store_true", help="Generate API stubs")

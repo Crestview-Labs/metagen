@@ -61,6 +61,8 @@ dev = [
     "black>=23.0.0",
     "ruff>=0.1.0",
     "mypy>=1.17.0",
+    "types-requests>=2.32.0",
+    "types-PyYAML>=6.0.12",
     "diskcache>=5.6.3",
     "jsonref>=1.1.0",
 ]
@@ -170,6 +172,7 @@ exclude = [
     "bundle/.*",    # Bundled output
     "cli/build/.*", # CLI build artifacts
     "cli/dist/.*",  # CLI TypeScript output
+    "macapp/build/.*", # Mac app build artifacts
 ]
 
 [[tool.mypy.overrides]]
