@@ -16,7 +16,8 @@ Metagen is an AI agent framework that provides:
 - Python 3.13+
 - Node.js 18+
 - pnpm (for workspace management)
-- uv (automatically installed by CLI setup)
+- uv (Python package manager - install from https://github.com/astral-sh/uv)
+- macOS: Xcode and XcodeGen (for Mac app)
 
 ## Quick Start
 
@@ -67,22 +68,64 @@ tail -f ~/.ambient/profiles/default/logs/backend-*.log
 
 ### Building from Source
 
-#### Generate API Stubs
+#### Prerequisites
 ```bash
-./build.sh  # Generates TypeScript and Swift client stubs
+# Install uv (Python package manager)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# macOS only: Install XcodeGen for Mac app
+brew install xcodegen
+
+# Set up Python environment
+uv venv
+uv pip install -r requirements.txt
 ```
 
-#### Build CLI
+#### Using the Build Script
+
+All builds are managed through the master build script:
+
 ```bash
-cd cli
-npm install
-npm run build
+# Build everything (requires backend running on port 8985)
+uv run python build.py --all
+
+# Build specific components
+uv run python build.py --api-stubs    # Generate API client stubs
+uv run python build.py --ts-api       # Build TypeScript API
+uv run python build.py --swift-api    # Build Swift API (macOS only)
+uv run python build.py --cli          # Build CLI
+uv run python build.py --mac-app      # Build Mac app (macOS only)
+uv run python build.py --backend-exe  # Build backend executable with PyInstaller
+uv run python build.py --package-mac  # Package Mac app as DMG
+
+# Clean all build artifacts
+uv run python build.py --clean
+
+# Verbose mode for debugging
+uv run python build.py --mac-app -v
 ```
 
-#### Package for Distribution (macOS)
+#### Running Components
+
+##### Backend Server
 ```bash
-./cli/scripts/build-macos.sh
-# Creates distributable in cli/dist-macos/
+# Start backend (required for API stub generation and runtime)
+uv run python main.py
+
+# Or with custom port
+uv run python main.py --port 8080
+```
+
+##### CLI
+```bash
+# After building with: uv run python build.py --cli
+./cli/scripts/ambient-cli.sh
+```
+
+##### Mac App (macOS)
+```bash
+# After building with: uv run python build.py --mac-app
+open macapp/build/Build/Products/Release/Ambient.app
 ```
 
 ### Manual Backend Running
