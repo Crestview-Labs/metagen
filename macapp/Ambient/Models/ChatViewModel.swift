@@ -102,32 +102,32 @@ class ChatViewModel: ObservableObject {
     }
     
     private func handleStreamResponse(_ stream: AsyncThrowingStream<ChatEvent, Error>) async {
-        let assistantMessage = ChatMessage(
-            id: UUID().uuidString,
-            role: .assistant,
-            content: "",
-            timestamp: Date()
-        )
-        messages.append(assistantMessage)
-        let messageIndex = messages.count - 1
-        
-        var toolCallsSection = ""
-        var contentSection = ""
-        var hasReceivedContent = false
+        // Keep track of current streaming message for agent content
+        var currentAgentMessage: ChatMessage? = nil
+        var currentAgentMessageIndex: Int? = nil
+        var isFirstMessageInTurn = true  // Track if we've shown the first message for this turn
         
         do {
             for try await event in stream {
                 switch event {
                 case .message(let content):
-                    // Agent's actual message content
-                    hasReceivedContent = true
-                    contentSection += content
-                    
-                    // Update display: show tools (if any) followed by content
-                    if !toolCallsSection.isEmpty {
-                        messages[messageIndex].content = toolCallsSection + "\n\n" + contentSection
+                    // Agent's actual message content - stream it into current or new message
+                    if let index = currentAgentMessageIndex {
+                        // Append to existing agent message
+                        messages[index].content += content
                     } else {
-                        messages[messageIndex].content = contentSection
+                        // Create new agent message
+                        let agentMessage = ChatMessage(
+                            id: UUID().uuidString,
+                            role: .assistant,
+                            content: content,
+                            timestamp: Date(),
+                            isFirstInTurn: isFirstMessageInTurn
+                        )
+                        messages.append(agentMessage)
+                        currentAgentMessage = agentMessage
+                        currentAgentMessageIndex = messages.count - 1
+                        isFirstMessageInTurn = false  // Mark that we've shown the first message
                     }
                     
                 case .thinking(_):
@@ -135,6 +135,10 @@ class ChatViewModel: ObservableObject {
                     break
                     
                 case .toolCall(let tool):
+                    // Reset current agent message tracking since we're showing a tool now
+                    currentAgentMessage = nil
+                    currentAgentMessageIndex = nil
+                    
                     // Format tool call with arguments
                     var toolDisplay = "🔧 \(tool.name)"
                     
@@ -158,14 +162,16 @@ class ChatViewModel: ObservableObject {
                         toolDisplay += "()"
                     }
                     
-                    // Add to tools section
-                    if !toolCallsSection.isEmpty {
-                        toolCallsSection += "\n"
-                    }
-                    toolCallsSection += toolDisplay
-                    
-                    // Update display
-                    messages[messageIndex].content = toolCallsSection
+                    // Add tool call as a separate system message
+                    let toolMessage = ChatMessage(
+                        id: UUID().uuidString,
+                        role: .system,
+                        content: toolDisplay,
+                        timestamp: Date(),
+                        isFirstInTurn: isFirstMessageInTurn
+                    )
+                    messages.append(toolMessage)
+                    isFirstMessageInTurn = false  // Mark that we've shown the first message
                     
                 case .toolStarted(_, _):
                     // Don't show separate "running" status - the tool call is enough
@@ -176,6 +182,10 @@ class ChatViewModel: ObservableObject {
                     break
                     
                 case .toolApproval(let toolCallId, let tool):
+                    // Reset current agent message tracking
+                    currentAgentMessage = nil
+                    currentAgentMessageIndex = nil
+                    
                     // Handle tool approval request
                     var approvalText = "⚠️ Approval needed: \(tool.name)"
                     if !tool.parameters.isEmpty {
@@ -185,11 +195,16 @@ class ChatViewModel: ObservableObject {
                         approvalText += "(\(params))"
                     }
                     
-                    if !toolCallsSection.isEmpty {
-                        toolCallsSection += "\n"
-                    }
-                    toolCallsSection += approvalText
-                    messages[messageIndex].content = toolCallsSection
+                    // Add approval request as a separate system message
+                    let approvalMessage = ChatMessage(
+                        id: UUID().uuidString,
+                        role: .system,
+                        content: approvalText,
+                        timestamp: Date(),
+                        isFirstInTurn: isFirstMessageInTurn
+                    )
+                    messages.append(approvalMessage)
+                    isFirstMessageInTurn = false  // Mark that we've shown the first message
                     
                     // Set pending approval
                     pendingApproval = ToolApprovalRequest(
@@ -204,14 +219,9 @@ class ChatViewModel: ObservableObject {
                     
                 case .done:
                     isStreaming = false
-                    // Final cleanup: ensure we show the final content
-                    if hasReceivedContent {
-                        if !toolCallsSection.isEmpty && !contentSection.isEmpty {
-                            messages[messageIndex].content = toolCallsSection + "\n\n" + contentSection
-                        } else if !contentSection.isEmpty {
-                            messages[messageIndex].content = contentSection
-                        }
-                    }
+                    // Reset tracking
+                    currentAgentMessage = nil
+                    currentAgentMessageIndex = nil
                 }
             }
         } catch {
@@ -264,6 +274,7 @@ struct ChatMessage: Identifiable {
     let role: MessageRole
     var content: String
     let timestamp: Date
+    var isFirstInTurn: Bool = false  // Track if this is the first message in a turn
 }
 
 enum MessageRole {
