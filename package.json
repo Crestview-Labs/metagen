@@ -4,10 +4,6 @@
   "description": "Metagen superintelligent personal agent - TypeScript CLI + Python backend",
   "private": true,
   "type": "module",
-  "workspaces": [
-    "packages/*",
-    "cli"
-  ],
   "bin": {
     "metagen": "bundle/metagen.js"
   },

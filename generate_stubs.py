@@ -449,11 +449,21 @@ public class MetagenStreamingClient {{
                                 continuation.yield(response)
                                 
                                 // Check for completion
-                                if let dict = response as? [String: Any],
-                                   let type = dict["type"] as? String,
-                                   type == "complete" {{
-                                    continuation.finish()
-                                    return
+                                if let dict = response as? [String: Any] {{
+                                    // Check if it's an agent message with final flag
+                                    if let type = dict["type"] as? String, 
+                                       type == "agent",
+                                       let final = dict["final"] as? Bool,
+                                       final == true {{
+                                        continuation.finish()
+                                        return
+                                    }}
+                                    // Also check for explicit complete type (legacy)
+                                    if let type = dict["type"] as? String,
+                                       type == "complete" {{
+                                        continuation.finish()
+                                        return
+                                    }}
                                 }}
                             }}
                         }}

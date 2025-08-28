@@ -14,35 +14,26 @@ interface ChatOptions {
   profile?: string;
   message?: string;
   autoApprove?: boolean;
-  noAutoStart?: boolean;
 }
 
 export async function chatCommand(options: ChatOptions = {}) {
   const profileName = options.profile || 'default';
   const profile = getProfilePaths(profileName);
   
-  // Check if backend is running, start if needed (unless disabled)
-  if (!options.noAutoStart) {
-    const manager = new BackendManager(profile);
-    const isRunning = await manager.isRunning();
-    
-    if (!isRunning) {
-      console.log(chalk.gray('Backend not running, starting...'));
-      try {
-        await manager.start({ detached: true });
-        console.log(chalk.green('✓ Backend started'));
-        
-        // Give it a moment to fully initialize
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      } catch (error) {
-        console.error(chalk.red('Failed to start backend:'), error);
-        console.error(chalk.yellow('Try running "ambient server" manually'));
-        process.exit(1);
-      }
-    } else {
-      // Backend already running - possibly shared with Mac app or other CLI instances
-      console.log(chalk.gray(`Connecting to backend on port ${profile.port}...`));
+  // Check if backend is accessible
+  const manager = new BackendManager(profile);
+  
+  try {
+    const health = await manager.getHealth();
+    if (health.status === 'healthy') {
+      console.log(chalk.gray(`Connected to backend on port ${profile.port}`));
     }
+  } catch (error) {
+    console.error(chalk.red('❌ Cannot connect to backend'));
+    console.error(chalk.yellow('Start it with one of these commands:'));
+    console.error(chalk.cyan('  uv run python launch.py server start'));
+    console.error(chalk.cyan('  uv run python main.py'));
+    process.exit(1);
   }
   
   // Set the API URL based on profile port

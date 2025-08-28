@@ -36,6 +36,9 @@ export function getProfilePaths(profileName: string): Profile {
   const baseDir = getProfileDir(profileName);
   const today = new Date().toISOString().split('T')[0];
   
+  // Always use BACKEND_PORT from environment, default to 8080
+  const port = parseInt(process.env.BACKEND_PORT || '8080', 10);
+  
   return {
     name: profileName,
     baseDir,
@@ -43,27 +46,12 @@ export function getProfilePaths(profileName: string): Profile {
     dbPath: path.join(baseDir, 'data', 'metagen.db'),
     logsDir: path.join(baseDir, 'logs'),
     pidFile: path.join(baseDir, 'ambient.pid'),
-    port: calculatePort(profileName),
+    port,
     logLevel: 'INFO',
     currentLogFile: path.join(baseDir, 'logs', `backend-${today}.log`)
   };
 }
 
-/**
- * Calculate deterministic port for profile
- */
-export function calculatePort(profileName: string): number {
-  // Use a simple hash function to generate consistent port
-  let hash = 0;
-  for (let i = 0; i < profileName.length; i++) {
-    const char = profileName.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash; // Convert to 32bit integer
-  }
-  
-  // Return port in range 8080-9080
-  return 8080 + (Math.abs(hash) % 1000);
-}
 
 /**
  * Ensure directory exists

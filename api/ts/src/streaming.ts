@@ -1,6 +1,6 @@
 /**
  * SSE Streaming wrapper for Metagen API v0.1.1
- * Generated: 2025-08-25T21:06:52.069905+00:00
+ * Generated: 2025-08-28T18:53:55.459572+00:00
  */
 
 import { OpenAPI, ChatService } from '../generated/index.js';

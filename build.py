@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
 """
-Master build script for Metagen ecosystem
-Handles API stub generation, CLI building, and Mac app packaging
+Enhanced master build script for Metagen ecosystem
+Handles all build operations with uv package management
 """
 
 import argparse
+import json
 import platform
+import re
 import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 
 class MetagenBuilder:
-    def __init__(self, verbose: bool = False):
+    def __init__(self, verbose: bool = False, mode: str = "intelligent", backend_port: int = 8080):
         self.verbose = verbose
+        self.mode = mode  # intelligent, dev, release
         self.root = Path(__file__).parent.absolute()
         self.platform = platform.system().lower()
+        self.backend_port = backend_port
 
     def log(self, message: str, level: str = "info") -> None:
         """Log messages with emoji prefixes"""
@@ -29,6 +34,8 @@ class MetagenBuilder:
             "error": "❌",
             "build": "🔨",
             "package": "📦",
+            "check": "🔍",
+            "version": "🏷️ ",
         }
         print(f"{prefixes.get(level, '')} {message}")
 
@@ -43,12 +50,280 @@ class MetagenBuilder:
             cmd, cwd=cwd or self.root, capture_output=not self.verbose, text=True, check=check
         )
 
-    def check_backend_running(self) -> bool:
-        """Check if backend server is running"""
+    def check_dependencies(self) -> bool:
+        """Check if all required dependencies are installed"""
+        self.log("Checking dependencies...", "check")
+
+        missing = []
+
+        # Check uv
+        if not shutil.which("uv"):
+            missing.append("uv (install from https://github.com/astral-sh/uv)")
+
+        # Check Node.js and npm
+        if not shutil.which("node"):
+            missing.append("node")
+        if not shutil.which("npm"):
+            missing.append("npm")
+
+        # Check platform-specific dependencies
+        if self.platform == "darwin":
+            if not shutil.which("xcodebuild"):
+                missing.append("Xcode (install from Mac App Store)")
+            if not shutil.which("xcodegen"):
+                missing.append("xcodegen (install with: brew install xcodegen)")
+
+        if missing:
+            self.log(f"Missing dependencies: {', '.join(missing)}", "error")
+            return False
+
+        self.log("All dependencies installed", "success")
+        return True
+
+    def get_current_version(self) -> str:
+        """Get the current version from api/version.json"""
+        version_file = self.root / "api" / "version.json"
+        if version_file.exists():
+            with open(version_file) as f:
+                data = json.load(f)
+                return str(data.get("version", "0.1.0"))
+        return "0.1.0"
+
+    def bump_version(self, level: str) -> bool:
+        """Bump version across all components"""
+        self.log(f"Bumping {level} version...", "version")
+
+        current = self.get_current_version()
+        parts = current.split(".")
+        major, minor, patch = int(parts[0]), int(parts[1]), int(parts[2])
+
+        if level == "major":
+            major += 1
+            minor = 0
+            patch = 0
+        elif level == "minor":
+            minor += 1
+            patch = 0
+        elif level == "patch":
+            patch += 1
+        else:
+            self.log(f"Invalid version level: {level}", "error")
+            return False
+
+        new_version = f"{major}.{minor}.{patch}"
+        self.log(f"Version: {current} → {new_version}", "version")
+
+        # Update api/version.json
+        version_file = self.root / "api" / "version.json"
+        data = {
+            "version": new_version,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "typescript": {
+                "version": new_version,
+                "generated": datetime.now(timezone.utc).isoformat(),
+            },
+            "swift": {"version": new_version, "generated": datetime.now(timezone.utc).isoformat()},
+        }
+        with open(version_file, "w") as f:
+            json.dump(data, f, indent=2)
+
+        # Update pyproject.toml
+        pyproject = self.root / "pyproject.toml"
+        if pyproject.exists():
+            content = pyproject.read_text()
+            content = re.sub(r'version = "[^"]+?"', f'version = "{new_version}"', content, count=1)
+            pyproject.write_text(content)
+
+        # Update TypeScript package.json files
+        for package_path in [
+            self.root / "api" / "ts" / "package.json",
+            self.root / "cli" / "package.json",
+        ]:
+            if package_path.exists():
+                with open(package_path) as f:
+                    data = json.load(f)
+                data["version"] = new_version
+                with open(package_path, "w") as f:
+                    json.dump(data, f, indent=2)
+
+        # Update Swift version
+        swift_version = self.root / "api" / "swift" / "Sources" / "MetagenAPI" / "Version.swift"
+        if swift_version.exists():
+            content = f'''// Auto-generated version file
+public struct MetagenAPIVersion {{
+    public static let version = "{new_version}"
+    public static let generatedAt = "{datetime.now(timezone.utc).isoformat()}"
+}}
+'''
+            swift_version.write_text(content)
+
+        self.log(f"Version bumped to {new_version}", "success")
+        return True
+
+    def run_type_checks(self) -> bool:
+        """Run mypy type checking"""
+        if self.mode == "dev":
+            self.log("Skipping type checks in dev mode", "info")
+            return True
+
+        self.log("Running type checks...", "check")
+        result = self.run_command(["uv", "run", "mypy", "."], check=False)
+
+        if result.returncode != 0:
+            if self.mode == "release":
+                self.log("Type check failed (release mode)", "error")
+                return False
+            else:
+                self.log("Type check warnings (continuing)", "warning")
+        else:
+            self.log("Type checks passed", "success")
+
+        return True
+
+    def run_linters(self) -> bool:
+        """Run code linters"""
+        if self.mode == "dev":
+            self.log("Skipping linters in dev mode", "info")
+            return True
+
+        self.log("Running linters...", "check")
+
+        # Run ruff
+        result = self.run_command(["uv", "run", "ruff", "check", "."], check=False)
+        if result.returncode != 0:
+            if self.mode == "release":
+                self.log("Linting failed (release mode)", "error")
+                return False
+            else:
+                self.log("Linting issues found (continuing)", "warning")
+
+        return True
+
+    def run_tests(self, use_real_llm: bool = False, pattern: Optional[str] = None) -> bool:
+        """Run test suites
+
+        Args:
+            use_real_llm: If True, run ALL tests including real LLM tests
+            pattern: Optional test pattern to match (e.g., 'test_agent*')
+        """
+        if self.mode == "dev":
+            self.log("Skipping tests in dev mode", "info")
+            return True
+
+        # Build pytest command
+        cmd = ["uv", "run", "pytest"]
+
+        # Add verbosity
+        if self.verbose:
+            cmd.append("-v")
+
+        # Add pattern matching if specified
+        if pattern:
+            cmd.extend(["-k", pattern])
+            self.log(f"Running tests matching pattern: {pattern}", "check")
+        elif use_real_llm:
+            self.log("Running ALL tests including real LLM tests", "warning")
+        else:
+            # Skip real LLM tests by default
+            self.log("Running tests (skipping real LLM tests)", "info")
+            cmd.extend(["-k", "not real_llm"])
+
+        result = self.run_command(cmd, check=False)
+
+        if result.returncode != 0:
+            if self.mode == "release":
+                self.log("Tests failed (release mode)", "error")
+                return False
+            else:
+                self.log("Some tests failed (continuing)", "warning")
+        else:
+            self.log("All tests passed", "success")
+
+        return True
+
+    def package_cli_dist(self) -> bool:
+        """Package CLI for distribution"""
+        self.log("Packaging CLI for distribution...", "package")
+
+        cli_dir = self.root / "cli"
+        build_dir = cli_dir / "build"
+        dist_dir = cli_dir / "dist-package"
+
+        # Clean previous builds
+        if build_dir.exists():
+            shutil.rmtree(build_dir)
+        if dist_dir.exists():
+            shutil.rmtree(dist_dir)
+
+        build_dir.mkdir()
+        dist_dir.mkdir()
+
+        # Build TypeScript first
+        if not (cli_dir / "dist").exists():
+            self.log("CLI not built, building first...", "info")
+            if not self.build_cli():
+                return False
+
+        # Copy Python backend
+        self.log("Copying Python backend...", "package")
+        backend_dir = build_dir / "backend"
+        backend_dir.mkdir()
+
+        # Copy essential files
+        for file in ["main.py", "pyproject.toml", "uv.lock"]:
+            src = self.root / file
+            if src.exists():
+                shutil.copy2(src, backend_dir)
+
+        # Copy Python source directories
+        dirs_to_copy = [
+            "agents",
+            "api",
+            "auth",
+            "client",
+            "common",
+            "db",
+            "integrations",
+            "memory",
+            "tools",
+        ]
+        for dir_name in dirs_to_copy:
+            src_dir = self.root / dir_name
+            if src_dir.exists():
+                shutil.copytree(src_dir, backend_dir / dir_name)
+
+        # Copy built JavaScript
+        shutil.copytree(cli_dir / "dist", build_dir / "dist")
+        shutil.copytree(cli_dir / "node_modules", build_dir / "node_modules")
+
+        # Create launcher script
+        launcher = build_dir / "ambient"
+        launcher.write_text("""#!/bin/bash
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+export METAGEN_PROJECT_ROOT="$SCRIPT_DIR/backend"
+exec node "$SCRIPT_DIR/dist/cli/src/index.js" "$@"
+""")
+        launcher.chmod(0o755)
+
+        # Create tarball
+        archive_name = f"ambient-cli-{self.get_current_version()}-{self.platform}"
+        self.log(f"Creating archive: {archive_name}.tar.gz", "package")
+
+        shutil.make_archive(str(dist_dir / archive_name), "gztar", build_dir)
+
+        self.log(f"CLI package created: {dist_dir / archive_name}.tar.gz", "success")
+        return True
+
+    def check_backend_running(self, port: int = 8080) -> bool:
+        """Check if backend server is running
+
+        Args:
+            port: Port to check (default: 8080)
+        """
         import urllib.request
 
         try:
-            with urllib.request.urlopen("http://localhost:8985/health", timeout=1) as response:
+            with urllib.request.urlopen(f"http://localhost:{port}/health", timeout=1) as response:
                 return bool(response.status == 200)
         except Exception:
             return False
@@ -58,8 +333,9 @@ class MetagenBuilder:
         self.log("Generating API stubs...", "build")
 
         # Check if backend is running
-        if not self.check_backend_running():
-            self.log("Backend not running. Start it with: uv run python main.py", "error")
+        if not self.check_backend_running(self.backend_port):
+            self.log(f"Backend not running on port {self.backend_port}", "error")
+            self.log("Start it with: uv run python launch.py server start", "info")
             return False
 
         # Run stub generation
@@ -68,9 +344,15 @@ class MetagenBuilder:
             # generate_stubs.py doesn't have --force flag
             pass
 
+        # Run with output visible for debugging
+        if self.verbose:
+            self.log("Running stub generation script...", "info")
+
         result = self.run_command(cmd, check=False)
         if result.returncode != 0:
             self.log("Failed to generate API stubs", "error")
+            if result.stderr:
+                self.log(f"Error: {result.stderr}", "error")
             return False
 
         self.log("API stubs generated", "success")
@@ -346,6 +628,16 @@ echo "✅ Backend executable built at dist/ambient-backend/"
         """Build everything"""
         self.log("Building all components...", "build")
 
+        # Check dependencies first
+        if not self.check_dependencies():
+            self.log("Missing dependencies. Install them and try again.", "error")
+            return False
+
+        # Run checks if not in dev mode
+        if self.mode != "dev":
+            self.run_type_checks()
+            self.run_linters()
+
         # Generate API stubs first
         if not self.generate_api_stubs():
             return False
@@ -386,9 +678,12 @@ echo "✅ Backend executable built at dist/ambient-backend/"
             self.root / "api" / "ts" / "dist",
             self.root / "api" / "swift" / ".build",
             self.root / "cli" / "dist",
+            self.root / "cli" / "build",
+            self.root / "cli" / "dist-package",
             self.root / "backend" / "dist",
             self.root / "backend" / "build",
             self.root / "macapp" / "build",
+            self.root / "macapp" / "Ambient.xcodeproj",
         ]
 
         for dir_path in clean_dirs:
@@ -401,7 +696,19 @@ echo "✅ Backend executable built at dist/ambient-backend/"
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Metagen master build script")
+    parser = argparse.ArgumentParser(description="Enhanced Metagen build script with uv")
+
+    # Build modes
+    parser.add_argument("--dev", action="store_true", help="Development mode (skip checks)")
+    parser.add_argument("--release", action="store_true", help="Release mode (strict checks)")
+    parser.add_argument("--check-only", action="store_true", help="Run checks without building")
+
+    # Version management
+    parser.add_argument("--bump-patch", action="store_true", help="Bump patch version (x.y.Z)")
+    parser.add_argument("--bump-minor", action="store_true", help="Bump minor version (x.Y.0)")
+    parser.add_argument("--bump-major", action="store_true", help="Bump major version (X.0.0)")
+
+    # Build targets
     parser.add_argument("--all", action="store_true", help="Build everything")
     parser.add_argument("--api-stubs", action="store_true", help="Generate API stubs")
     parser.add_argument("--force-stubs", action="store_true", help="Force regenerate API stubs")
@@ -411,10 +718,31 @@ def main() -> int:
     parser.add_argument("--backend-exe", action="store_true", help="Build backend executable")
     parser.add_argument("--mac-app", action="store_true", help="Build Mac app")
     parser.add_argument("--package-mac", action="store_true", help="Package Mac app as DMG")
+    parser.add_argument("--package-cli", action="store_true", help="Package CLI for distribution")
     parser.add_argument("--clean", action="store_true", help="Clean build artifacts")
+
+    # Testing and checks
+    parser.add_argument("--test", action="store_true", help="Run tests with mock LLMs")
+    parser.add_argument(
+        "--test-real", action="store_true", help="Run tests with real LLMs (requires API keys)"
+    )
+    parser.add_argument(
+        "--test-pattern", help="Run specific tests matching pattern (e.g., 'test_agent*')"
+    )
+    parser.add_argument("--type-check", action="store_true", help="Run type checks")
+    parser.add_argument("--lint", action="store_true", help="Run linters")
+
+    # Other options
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
+
+    # Determine mode
+    mode = "intelligent"  # default
+    if args.dev:
+        mode = "dev"
+    elif args.release:
+        mode = "release"
 
     # If no specific build target, show help
     if not any(
@@ -427,18 +755,55 @@ def main() -> int:
             args.backend_exe,
             args.mac_app,
             args.package_mac,
+            args.package_cli,
             args.clean,
+            args.check_only,
+            args.bump_patch,
+            args.bump_minor,
+            args.bump_major,
+            args.test,
+            args.type_check,
+            args.lint,
         ]
     ):
         parser.print_help()
         return 1
 
-    builder = MetagenBuilder(verbose=args.verbose)
+    builder = MetagenBuilder(verbose=args.verbose, mode=mode)
 
     try:
+        # Handle version bumping
+        if args.bump_patch:
+            return 0 if builder.bump_version("patch") else 1
+        if args.bump_minor:
+            return 0 if builder.bump_version("minor") else 1
+        if args.bump_major:
+            return 0 if builder.bump_version("major") else 1
+
+        # Handle checks and tests
+        if args.check_only:
+            # Quick checks only - NO TESTS
+            builder.log("Running quick checks (type check + lint)...", "info")
+            success = builder.run_type_checks() and builder.run_linters()
+            return 0 if success else 1
+
+        if args.type_check:
+            return 0 if builder.run_type_checks() else 1
+
+        if args.lint:
+            return 0 if builder.run_linters() else 1
+
+        if args.test or args.test_real:
+            # Run tests with appropriate configuration
+            use_real_llm = args.test_real
+            pattern = args.test_pattern
+            return 0 if builder.run_tests(use_real_llm=use_real_llm, pattern=pattern) else 1
+
+        # Handle clean
         if args.clean:
             return 0 if builder.clean() else 1
 
+        # Handle build all
         if args.all:
             return 0 if builder.build_all() else 1
 
@@ -456,6 +821,9 @@ def main() -> int:
 
         if args.cli:
             success = success and builder.build_cli()
+
+        if args.package_cli:
+            success = success and builder.package_cli_dist()
 
         if args.backend_exe:
             success = success and builder.build_backend_executable()

@@ -51,7 +51,8 @@ export const App: React.FC<AppProps> = ({
   const { stdin, setRawMode } = useStdin();
   
   // Configure API base URL from environment or use default with correct port
-  OpenAPI.BASE = process.env.METAGEN_API_URL || 'http://localhost:8985';
+  const backendPort = process.env.BACKEND_PORT || '8080';
+  OpenAPI.BASE = process.env.METAGEN_API_URL || `http://localhost:${backendPort}`;
   
   // Terminal size state
   const [terminalWidth, setTerminalWidth] = useState(process.stdout.columns || 80);
